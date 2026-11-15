@@ -116,3 +116,36 @@ func TestFixedMountsAllowProjectsInsideWorkspace(t *testing.T) {
 		t.Fatal("accepted a symlink leaving the workspace")
 	}
 }
+
+func TestPrepareUpdatesCallerShareRootBeforeFailingOnMissingVM(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	realShare := filepath.Join(root, "real-share")
+	if err := os.MkdirAll(filepath.Join(realShare, "workspace"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(realShare, "claude"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	linkShare := filepath.Join(root, "link-share")
+	if err := os.Symlink(realShare, linkShare); err != nil {
+		t.Fatal(err)
+	}
+
+	l := launcher{root: root, home: home, shareRoot: linkShare, lima: filepath.Join(root, "no-such-limactl")}
+	cfg := settings{Project: filepath.Join(realShare, "workspace")}
+
+	if err := l.prepare(context.Background(), cfg); err == nil {
+		t.Fatal("expected prepare to fail at inspectVM with a missing limactl binary")
+	}
+
+	// prepare 的第一步 ensureShareDirs 会把 shareRoot 解析成符号链接指向的真实路径。
+	// 即使 prepare 随后因为 limactl 缺失而失败，调用者持有的 l 也应该看到这次更新。
+	resolvedRealShare, err := filepath.EvalSymlinks(realShare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.shareRoot != resolvedRealShare {
+		t.Fatalf("shareRoot = %q, want %q (prepare must propagate the resolved path to the caller)", l.shareRoot, resolvedRealShare)
+	}
+}

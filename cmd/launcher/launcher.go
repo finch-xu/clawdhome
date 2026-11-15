@@ -188,7 +188,10 @@ func parseVMInfo(lines string) (vmInfo, error) {
 	return vmInfo{}, nil
 }
 
-func (l launcher) prepare(ctx context.Context, cfg settings) error {
+// prepare 用指针接收者：第一步的 ensureShareDirs 会把 shareRoot 解析成符号链接
+// 指向的真实路径，这次更新必须对调用者可见，因为 guestProjectPath 用 shareRoot
+// 算 VirtioFS 卷名的哈希。
+func (l *launcher) prepare(ctx context.Context, cfg settings) error {
 	if err := l.ensureShareDirs(); err != nil {
 		return err
 	}
