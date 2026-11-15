@@ -1,3 +1,5 @@
+<img src="assets/logo.svg" alt="" width="96" height="96">
+
 # clawdhome
 
 在隔离的 macOS 虚拟机里运行 CLI 工具的 macOS 原生启动器。

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="clawdhome">
+  <title>clawdhome</title>
+  <defs>
+    <linearGradient id="clawdhome-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4f99ff"/>
+      <stop offset="1" stop-color="#2a6be0"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28.6" fill="url(#clawdhome-bg)"/>
+  <path d="M64 24 L104 56 L104 102 L24 102 L24 56 Z" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M46 70 L57 80 L46 90"/>
+    <path d="M65 90 L82 90"/>
+  </g>
+</svg>
