@@ -6,7 +6,17 @@
 
 ## 本机验证
 
-在项目根目录运行 `./scripts/run-app.sh`。当前验证实例是 `cli-mvp`，Lima 状态目录记录在 `.mvp-cache/instance-home`。退出启动器时 guest 中的会话继续运行，重开后点对应会话即可接回。短命令退出后仍可查看输出。停止 VM 会结束其中的进程。
+日常调试用 MyGo CLI，它钉在 `go.mod` 的 `tool` 指令里，版本随仓库锁定：
+
+```sh
+go tool mygo dev
+```
+
+改任意 `.go` 文件保存后自动重建重启，编译失败则保留正在运行的那一份。`Alt+Cmd+I` 打开 inspector 看元素树、盒模型和帧耗时。`-background` 重建后不抢焦点，`-lang zh-Hans` 临时用某语言启动而不改已保存的偏好。终端里 `r` 重启、`c` 清屏、`q` 退出。开发版叫 `CLI Launcher Dev`，identifier 带 `.dev` 后缀，数据和系统授权与正式版隔开；它用钥匙串里的 Apple Development 身份签名，所以 macOS 会记住授权。`libghostty-vt.dylib` 由 CLI 自动下载校验并签进 app，无需手动放置。
+
+要验证 `go build` 的正式产物（不经过 CLI 打包），用 `./scripts/run-app.sh`。两条路都从 `.mvp-cache/instance-home` 往上找项目根，所以在仓库任意子目录执行都能定位。
+
+当前验证实例是 `cli-mvp`，Lima 状态目录记录在 `.mvp-cache/instance-home`。退出启动器时 guest 中的会话继续运行，重开后点对应会话即可接回。短命令退出后仍可查看输出。停止 VM 会结束其中的进程。
 
 VM 启动时默认隐藏系统桌面。需要操作系统界面时，点「显示 VM 桌面」。关闭桌面窗口后，VM 和 CLI 会话继续运行，按钮可以再次打开同一个桌面。
 
@@ -44,6 +54,6 @@ Claude Code 二进制安装在 VM 本地的 `~/.local/share/claude/`，入口是
 1. 将 Lima 2.3.0 的 Darwin arm64 官方发布归档解压到 `.mvp-cache/lima/`。将 v2.3.0 源码和同版 vendor 归档分别放为 `.mvp-cache/lima-src-v2.3.0.tar.gz` 和 `.mvp-cache/lima-vendor-v2.3.0.tar.gz`。运行 `scripts/build-lima.sh`，脚本生成带虚拟化签名的 `limactl-mvp`。
 2. 将 Apple 26.6.2 恢复镜像 `UniversalMac_26.6.2_25G83_Restore.ipsw` 放入 `.mvp-cache/`。Lima 读取并校验配置固定的 SHA-256。用 `mktemp -d /tmp/cli-mvp.XXXXXX > .mvp-cache/instance-home` 准备短路径。创建实例时设置 `LIMA_HOME` 为文件中的目录，`MVP_LIMACTL` 为上一步的绝对路径，然后执行 `./scripts/create-vm.sh`。启动实例时还需设置 `MVP_CLASH_SOCKS5=127.0.0.1:端口`。
 3. 将 tmux 3.6b 与 libevent 2.1.12 的上游发布源码归档放入 `.mvp-cache/`，文件名分别为 `tmux-3.6b.tar.gz` 和 `libevent-2.1.12-stable.tar.gz`。运行 `scripts/build-tmux.sh`。首次从启动器运行 CLI 时自动经 SSH 离线安装 tmux，并设置 `en-US`、`en_US` 和 `America/Los_Angeles`。也可在 VM 启动后运行 `scripts/setup-guest.sh` 手动配置。
-4. 用 Go 1.27.3 执行 `go build -o .mvp-cache/launcher ./cmd/launcher`。MyGo 0.9.0 指定的 arm64 `libghostty-vt.dylib` 放在 `.mvp-cache/mygo-native/` 后运行 `scripts/run-app.sh`。
+4. 调试直接运行 `go tool mygo dev`，它自行编译、签名并下载 native 库。要用 `scripts/run-app.sh` 跑正式产物，则用 Go 1.27.3 执行 `go build -o .mvp-cache/launcher ./cmd/launcher`，并把 MyGo 0.9.0 指定的 arm64 `libghostty-vt.dylib` 放在 `.mvp-cache/mygo-native/`（存在时启动器优先用它，否则交给框架查找）。
 
 [Lima 2.3.0](https://github.com/lima-vm/lima/releases/tag/v2.3.0) · [MyGo 终端插件](https://mygo.egoist.dev/docs/plugins/terminal)

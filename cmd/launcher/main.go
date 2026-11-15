@@ -112,8 +112,10 @@ func main() {
 		log.Fatal(err)
 	}
 	if os.Getenv("MYGO_GHOSTTY_VT") == "" {
-		if err := os.Setenv("MYGO_GHOSTTY_VT", filepath.Join(root, ".mvp-cache", "mygo-native", "libghostty-vt.dylib")); err != nil {
-			log.Fatal(err)
+		if p := ghosttyLibraryPath(root); p != "" {
+			if err := os.Setenv("MYGO_GHOSTTY_VT", p); err != nil {
+				log.Fatal(err)
+			}
 		}
 	}
 	home, err := os.ReadFile(filepath.Join(root, ".mvp-cache", "instance-home"))
@@ -172,15 +174,45 @@ func main() {
 	}
 }
 
-func defaultWorkspace() string {
-	if exe, err := os.Executable(); err == nil {
-		contents := filepath.Dir(filepath.Dir(exe))
-		bundle := filepath.Dir(contents)
-		if filepath.Base(contents) == "Contents" && filepath.Ext(bundle) == ".app" {
-			return filepath.Dir(filepath.Dir(bundle))
-		}
+// workspaceMarker 是判定「这个目录是项目根」的依据：它记录当前验证实例的
+// Lima 状态目录，只有项目根下才有。用 marker 而不是数目录层数，是因为 bundle
+// 的位置取决于谁构建它——scripts/run-app.sh 放在 .mvp-cache/ 下，mygo dev 放在
+// .mygo/dev/<goos>-<goarch>/ 下，深一层。
+var workspaceMarker = filepath.Join(".mvp-cache", "instance-home")
+
+// ghosttyLibraryPath 返回仓库里手工放置的 libghostty-vt.dylib，没有则返回空
+// 串。调用方只在非空时设 MYGO_GHOSTTY_VT：那是查找链的第一位，而框架不校验
+// 文件是否存在（ffi.Library.Path 只看变量非空），所以指向一个不存在的路径会
+// 让终端插件直接加载失败，而不是回退到 app resources 或用户缓存。
+func ghosttyLibraryPath(root string) string {
+	p := filepath.Join(root, ".mvp-cache", "mygo-native", "libghostty-vt.dylib")
+	if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+		return p
 	}
-	return "."
+	return ""
+}
+
+func defaultWorkspace() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return findWorkspace(filepath.Dir(exe))
+}
+
+// findWorkspace 从 startDir 逐级向上，返回第一个含 workspaceMarker 的目录；
+// 一直到文件系统顶都没有时返回 "."，由调用方按工作目录解析（go run 的场景）。
+func findWorkspace(startDir string) string {
+	for dir := startDir; ; {
+		if info, err := os.Stat(filepath.Join(dir, workspaceMarker)); err == nil && info.Mode().IsRegular() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "."
+		}
+		dir = parent
+	}
 }
 
 func (a *app) view(c *ui.Context) {

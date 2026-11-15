@@ -40,3 +40,9 @@ mydocs/
 
 # Local build cache: Lima binaries, VM images, toolchains (tens of GB)
 .mvp-cache/
+
+# mygo dev 的开发版 app 与自动下载的 native 库
+.mygo/
+# mygo build 的打包产物（mygo.json 的 out）
+build/
+.DS_Store

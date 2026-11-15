@@ -1,0 +1,8 @@
+{
+  "name": "CLI Launcher",
+  "slug": "clawdhome",
+  "identifier": "local.mac-cli-launcher.mvp",
+  "version": "0.1.0",
+  "main": "./cmd/launcher",
+  "out": "build"
+}

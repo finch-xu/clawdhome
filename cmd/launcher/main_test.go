@@ -118,3 +118,77 @@ func TestRunWorksOnALauncherCopy(t *testing.T) {
 			a.launcher.ShareRoot, want)
 	}
 }
+
+// markWorkspace 在 root 下建出 marker 文件，再建出 exeDir 并返回它。marker 是
+// 判定「这是项目根」的唯一依据，所以每个用例都要先有它。
+func markWorkspace(t *testing.T, root, exeDir string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, ".mvp-cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".mvp-cache", "instance-home"), []byte("/tmp/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, exeDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// scripts/run-app.sh 的布局：bundle 直接放在 .mvp-cache 下。
+func TestFindWorkspaceFromScriptBundle(t *testing.T) {
+	root := t.TempDir()
+	exeDir := markWorkspace(t, root, filepath.Join(".mvp-cache", "CLI Launcher.app", "Contents", "MacOS"))
+
+	if got := findWorkspace(exeDir); got != root {
+		t.Fatalf("findWorkspace(%q) = %q, want the project root %q", exeDir, got, root)
+	}
+}
+
+// mygo dev 的布局：bundle 在 .mygo/dev/<goos>-<goarch>/ 下，比脚本深一层。靠
+// 数目录层数的做法会在这里返回 <root>/.mygo/dev。
+func TestFindWorkspaceFromMygoDevBundle(t *testing.T) {
+	root := t.TempDir()
+	exeDir := markWorkspace(t, root,
+		filepath.Join(".mygo", "dev", "darwin-arm64", "CLI Launcher Dev.app", "Contents", "MacOS"))
+
+	if got := findWorkspace(exeDir); got != root {
+		t.Fatalf("findWorkspace(%q) = %q, want the project root %q", exeDir, got, root)
+	}
+}
+
+// go run ./cmd/launcher：可执行文件在临时目录里，和项目根毫无关系。找不到
+// marker 时回退 "."，由调用方按工作目录解析。
+func TestFindWorkspaceFallsBackToWorkingDirectory(t *testing.T) {
+	exeDir := t.TempDir()
+
+	if got := findWorkspace(exeDir); got != "." {
+		t.Fatalf("findWorkspace(%q) = %q, want %q when no marker is above it", exeDir, got, ".")
+	}
+}
+
+// 手工放过 dylib 的仓库（README「重建」第 4 步）：指向它，省掉一次下载。
+func TestGhosttyLibraryPathUsesTheCachedDylib(t *testing.T) {
+	root := t.TempDir()
+	dylib := filepath.Join(root, ".mvp-cache", "mygo-native", "libghostty-vt.dylib")
+	if err := os.MkdirAll(filepath.Dir(dylib), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dylib, []byte("not a real dylib"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := ghosttyLibraryPath(root); got != dylib {
+		t.Fatalf("ghosttyLibraryPath(%q) = %q, want the cached %q", root, got, dylib)
+	}
+}
+
+// 缓存里没有 dylib 时必须返回空串，让调用方不要设 MYGO_GHOSTTY_VT：那个变量
+// 是查找链的第一位，且框架不校验文件存在，设了就会掐死 mygo dev 签进 app
+// resources 的那一份和用户缓存里下载的那一份。
+func TestGhosttyLibraryPathIsEmptyWithoutTheCachedDylib(t *testing.T) {
+	if got := ghosttyLibraryPath(t.TempDir()); got != "" {
+		t.Fatalf("ghosttyLibraryPath = %q, want \"\" so the framework keeps looking", got)
+	}
+}
