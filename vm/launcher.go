@@ -88,22 +88,25 @@ func (l Launcher) SaveSettings(cfg Settings) error {
 	}
 	raw, err := json.Marshal(cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("无法序列化设置: %w", err)
 	}
 	file, err := os.CreateTemp(l.Home, ".launcher-*.json")
 	if err != nil {
-		return err
+		return fmt.Errorf("无法创建设置临时文件: %w", err)
 	}
 	defer os.Remove(file.Name())
 	_, err = file.Write(raw)
 	closeErr := file.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("无法写入设置: %w", err)
 	}
 	if closeErr != nil {
-		return closeErr
+		return fmt.Errorf("无法关闭设置文件: %w", closeErr)
 	}
-	return os.Rename(file.Name(), filepath.Join(l.Home, "launcher.json"))
+	if err := os.Rename(file.Name(), filepath.Join(l.Home, "launcher.json")); err != nil {
+		return fmt.Errorf("无法保存设置: %w", err)
+	}
+	return nil
 }
 
 func ValidPort(port string) bool {
@@ -131,7 +134,7 @@ func commandOutput(cmd *exec.Cmd) ([]byte, error) {
 func (l Launcher) InspectVM(ctx context.Context) (VMInfo, error) {
 	out, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, "list", "--json"))
 	if err != nil {
-		return VMInfo{}, err
+		return VMInfo{}, fmt.Errorf("无法读取 VM 状态: %w", err)
 	}
 	return parseVMInfo(string(out))
 }
@@ -209,7 +212,7 @@ func (l *Launcher) Prepare(ctx context.Context, cfg Settings) error {
 	}
 	if vm.Status == "" {
 		if _, err := commandOutput(l.Cmd(ctx, cfg.Port, filepath.Join(l.Root, "scripts", "create-vm.sh"), l.ShareRoot)); err != nil {
-			return err
+			return fmt.Errorf("创建 VM 失败: %w", err)
 		}
 	} else if !vm.hasMounts(mounts) || vm.Config.TimeZone != GuestTimeZone {
 		encoded, err := json.Marshal(mounts)
@@ -218,14 +221,14 @@ func (l *Launcher) Prepare(ctx context.Context, cfg Settings) error {
 		}
 		expression := ".mounts = " + string(encoded) + " | .timezone = " + strconv.Quote(GuestTimeZone)
 		if _, err := commandOutput(l.Cmd(ctx, cfg.Port, l.LimactlBin, "edit", "--tty=false", "--set", expression, instance)); err != nil {
-			return err
+			return fmt.Errorf("更新 VM 共享目录或时区失败: %w", err)
 		}
 	}
 	if err := l.SaveSettings(cfg); err != nil {
 		return err
 	}
 	if _, err := commandOutput(l.Cmd(ctx, cfg.Port, l.LimactlBin, "start", "--tty=false", "--timeout=25m", instance)); err != nil {
-		return err
+		return fmt.Errorf("启动 VM 失败: %w", err)
 	}
 	return l.ensureGuestSetup(ctx)
 }
@@ -264,7 +267,7 @@ func (l Launcher) List(ctx context.Context) ([]Session, error) {
 			(strings.Contains(err.Error(), "error connecting to") && strings.Contains(err.Error(), "No such file")) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("无法列出 VM 中的会话: %w", err)
 	}
 	return parseSessions(string(result)), nil
 }
@@ -285,14 +288,16 @@ func (l Launcher) Create(ctx context.Context, project, command string) (string, 
 	}
 	var token [4]byte
 	if _, err := rand.Read(token[:]); err != nil {
-		return "", err
+		return "", fmt.Errorf("无法生成会话 ID: %w", err)
 	}
 	id := "cli-" + hex.EncodeToString(token[:])
 	// Validate the share before tmux can fall back to the guest home directory.
 	args := vmShellArgs(`cd "$HOME/workspace/$1" || { echo "项目目录未挂载" >&2; exit 1; }; shift; `+execTmux,
 		rel, "new-session", "-d", "-s", id, command)
-	_, err = commandOutput(l.Cmd(ctx, "", l.LimactlBin, args...))
-	return id, err
+	if _, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, args...)); err != nil {
+		return id, fmt.Errorf("无法在 VM 中启动会话: %w", err)
+	}
+	return id, nil
 }
 
 func (l Launcher) NetworkStatus(vm VMInfo) *egress.GatewayStatus {
@@ -312,12 +317,16 @@ func (l Launcher) NetworkStatus(vm VMInfo) *egress.GatewayStatus {
 
 // Stop 停止虚拟机，guest 内运行的进程随之结束。
 func (l Launcher) Stop(ctx context.Context) error {
-	_, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, "stop", instance))
-	return err
+	if _, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, "stop", instance)); err != nil {
+		return fmt.Errorf("停止 VM 失败: %w", err)
+	}
+	return nil
 }
 
 // KillSession 结束 guest 内指定的 tmux 会话。
 func (l Launcher) KillSession(ctx context.Context, id string) error {
-	_, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, l.TmuxArgs("kill-session", "-t", "="+id)...))
-	return err
+	if _, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, l.TmuxArgs("kill-session", "-t", "="+id)...)); err != nil {
+		return fmt.Errorf("无法结束会话 %s: %w", id, err)
+	}
+	return nil
 }

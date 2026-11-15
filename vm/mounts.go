@@ -18,7 +18,7 @@ type VMMount struct {
 func DefaultShareRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("无法确定用户主目录: %w", err)
 	}
 	return filepath.Join(home, "macOS-CLI-Launcher", instance), nil
 }
@@ -34,20 +34,20 @@ func (l Launcher) sharedMounts() []VMMount {
 
 func (l *Launcher) EnsureShareDirs() error {
 	if err := os.MkdirAll(l.ShareRoot, 0700); err != nil {
-		return err
+		return fmt.Errorf("无法创建共享目录根路径 (%s): %w", l.ShareRoot, err)
 	}
 	root, err := filepath.EvalSymlinks(l.ShareRoot)
 	if err != nil {
-		return err
+		return fmt.Errorf("无法解析共享目录根路径 (%s): %w", l.ShareRoot, err)
 	}
 	l.ShareRoot = root
 	for _, mount := range l.sharedMounts() {
 		if err := os.MkdirAll(mount.Location, 0700); err != nil {
-			return err
+			return fmt.Errorf("无法创建共享目录 (%s): %w", mount.Location, err)
 		}
 		info, err := os.Lstat(mount.Location)
 		if err != nil {
-			return err
+			return fmt.Errorf("无法读取共享目录信息 (%s): %w", mount.Location, err)
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("共享目录须为本地目录 (%s)", mount.Location)

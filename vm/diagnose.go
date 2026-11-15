@@ -2,13 +2,16 @@ package vm
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
 // CheckSSH 在 guest 里跑一条空命令，用来区分「SSH 通道不可用」和「tmux 没起来」。
 func (l Launcher) CheckSSH(ctx context.Context) error {
-	_, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, vmShellArgs("/usr/bin/true")...))
-	return err
+	if _, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, vmShellArgs("/usr/bin/true")...)); err != nil {
+		return fmt.Errorf("无法通过 SSH 连接 VM: %w", err)
+	}
+	return nil
 }
 
 const networkSnapshotScript = `
@@ -36,7 +39,7 @@ func (l Launcher) NetworkSnapshot(ctx context.Context, withAnthropic bool) (stri
 	}
 	out, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, vmShellArgs(script)...))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("无法读取 VM 网络信息: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
