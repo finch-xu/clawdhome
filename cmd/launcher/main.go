@@ -125,12 +125,6 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		a.locale = toLocale(mygo.App.Locale())
-		mygo.App.OnLocaleChanged(func(tag string) {
-			a.window.Update(func() { a.locale = toLocale(tag) })
-		})
-		mygo.Theme.OnUpdated(func() {
-			a.window.Update(func() {}) // 空回调触发重绘，让 view 用新主题取色
-		})
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu},
 			{Label: tr("menu.sessions", a.locale), Submenu: []*mygo.MenuItem{
@@ -142,6 +136,14 @@ func main() {
 			Title: tr("app.title", a.locale), Width: 920, Height: 620, Content: ui.View(a.view),
 		})
 		a.window = a.realWindow
+		// 这两个回调要在窗口建好、a.window 赋值之后才注册：它们的唯一作用是
+		// 驱动重绘，而在窗口存在之前触发会对 nil 的 a.window 调 Update。
+		mygo.App.OnLocaleChanged(func(tag string) {
+			a.window.Update(func() { a.locale = toLocale(tag) })
+		})
+		mygo.Theme.OnUpdated(func() {
+			a.window.Update(func() {}) // 空回调触发重绘，让 view 用新主题取色
+		})
 		a.realWindow.OnClosed(func() {
 			for id, term := range a.terms {
 				delete(a.terms, id)
