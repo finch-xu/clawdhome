@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestLookupFallsBackToEnglishWhenKeyMissingInLocale(t *testing.T) {
 	dicts := map[locale]map[string]string{
@@ -52,5 +56,28 @@ func TestEveryEnglishKeyHasChineseTranslation(t *testing.T) {
 		if _, ok := messages[localeEN][key]; !ok {
 			t.Errorf("key %q exists only in zh-Hans; English is the fallback and must have it", key)
 		}
+	}
+}
+
+func TestFormatUptimeShowsSecondsUnderAMinute(t *testing.T) {
+	// 刚启动的会话不能显示"0 分钟"，那看起来像没跑起来。
+	for _, d := range []time.Duration{0, 30 * time.Second, 59 * time.Second} {
+		for _, loc := range []locale{localeEN, localeZhHans} {
+			got := formatUptime(d, loc)
+			if strings.Contains(got, "0 分钟") || strings.Contains(got, "0m") {
+				t.Fatalf("formatUptime(%v, %q) = %q, want seconds instead of a zero minute count", d, loc, got)
+			}
+		}
+	}
+}
+
+func TestFormatUptimeUsesDaysBeyondADay(t *testing.T) {
+	got := formatUptime(72*time.Hour+30*time.Minute, localeEN)
+	if !strings.Contains(got, "3d") {
+		t.Fatalf("formatUptime(72h30m) = %q, want it counted in days", got)
+	}
+	gotZh := formatUptime(72*time.Hour+30*time.Minute, localeZhHans)
+	if !strings.Contains(gotZh, "3 天") {
+		t.Fatalf("formatUptime(72h30m, zh) = %q, want it counted in days", gotZh)
 	}
 }

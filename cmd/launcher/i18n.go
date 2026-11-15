@@ -243,19 +243,31 @@ var messages = map[locale]map[string]string{
 	},
 }
 
-// formatUptime 把运行时长写成人类可读的形式，按当前语言选单位。
+// formatUptime 把运行时长写成人类可读的形式，按当前语言选单位。不足一分钟时
+// 报秒数，否则刚启动的会话会显示「0 分钟」，看起来像没跑起来；超过一天按天报，
+// 因为「3 天」比「72 小时」好读。
 func formatUptime(d time.Duration, loc locale) string {
-	hours, minutes := int(d.Hours()), int(d.Minutes())%60
-	if loc == localeZhHans {
-		if hours > 0 {
-			return fmt.Sprintf("运行 %d 小时 %d 分", hours, minutes)
-		}
-		return fmt.Sprintf("运行 %d 分钟", minutes)
-	}
-	if hours > 0 {
+	days := int(d.Hours()) / 24
+	hours, minutes, seconds := int(d.Hours())%24, int(d.Minutes())%60, int(d.Seconds())%60
+	zh := loc == localeZhHans
+	switch {
+	case days > 0 && zh:
+		return fmt.Sprintf("运行 %d 天 %d 小时", days, hours)
+	case days > 0:
+		return fmt.Sprintf("running %dd %dh", days, hours)
+	case int(d.Hours()) > 0 && zh:
+		return fmt.Sprintf("运行 %d 小时 %d 分", hours, minutes)
+	case int(d.Hours()) > 0:
 		return fmt.Sprintf("running %dh %dm", hours, minutes)
+	case minutes > 0 && zh:
+		return fmt.Sprintf("运行 %d 分钟", minutes)
+	case minutes > 0:
+		return fmt.Sprintf("running %dm", minutes)
+	case zh:
+		return fmt.Sprintf("运行 %d 秒", seconds)
+	default:
+		return fmt.Sprintf("running %ds", seconds)
 	}
-	return fmt.Sprintf("running %dm", minutes)
 }
 
 // statusSummary 是状态条常驻那一行的文案：四项状态各查字典翻译。

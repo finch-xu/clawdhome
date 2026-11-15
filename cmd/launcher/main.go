@@ -220,6 +220,9 @@ func (a *app) view(c *ui.Context) {
 				a.kill()
 			}
 		})
+		// 这三条分支的主区域都带 Grow(1)，由它吸收剩余高度，才能把下面的状态条
+		// 压到窗口底部。新增视图分支时必须同样带 Grow(1)，否则状态条会浮到内容
+		// 下方而不是贴着窗口下边缘。
 		if a.networkOpen {
 			a.networkPanel(c.Key("network-panel"))
 		} else if term := a.terms[a.selected]; term != nil {
