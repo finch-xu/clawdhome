@@ -224,3 +224,30 @@ func TestSessionUptimeUnavailableForExitedSession(t *testing.T) {
 		t.Fatalf("SessionUptime() = (%v, %v), want (0, false) for an exited session", got, ok)
 	}
 }
+
+func TestParseTmuxSessionExitMetadata(t *testing.T) {
+	lines := "cli-live::@v2::1700000000::0::::::zsh::\n" +
+		"cli-zero::@v2::1700000000::1::0::::sh::printf 'a::b'\n" +
+		"cli-one::@v2::1700000000::1::1::::sh::exit 1\n" +
+		"cli-sig::@v2::1700000000::1::::TERM::sh::sleep 20\n" +
+		"cli-unknown::@v2::bad::1::invalid::::sh::work"
+	got := ParseSessions(lines)
+	if len(got) != 5 {
+		t.Fatalf("got %d sessions: %+v", len(got), got)
+	}
+	if got[0].Exited || got[0].ExitCodeKnown || got[0].Command != "zsh" {
+		t.Fatalf("running session: %+v", got[0])
+	}
+	if !got[1].Exited || !got[1].ExitCodeKnown || got[1].ExitCode != 0 || got[1].Command != "printf 'a::b'" {
+		t.Fatalf("successful exit: %+v", got[1])
+	}
+	if !got[2].Exited || !got[2].ExitCodeKnown || got[2].ExitCode != 1 || got[2].Command != "exit 1" {
+		t.Fatalf("unsuccessful exit: %+v", got[2])
+	}
+	if !got[3].Exited || got[3].ExitCodeKnown || got[3].ExitSignal != "TERM" || got[3].Command != "sleep 20" {
+		t.Fatalf("signaled exit: %+v", got[3])
+	}
+	if !got[4].Exited || got[4].ExitCodeKnown || got[4].ExitSignal != "" || !got[4].StartedAt.IsZero() {
+		t.Fatalf("unknown exit: %+v", got[4])
+	}
+}

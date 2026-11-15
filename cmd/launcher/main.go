@@ -86,6 +86,7 @@ type app struct {
 	sessions         []vm.Session
 	terms            map[string]*terminal.Terminal
 	selected         string
+	attachFailure    string
 	busy             bool
 	ssh              string
 	network          *egress.GatewayStatus
@@ -283,7 +284,7 @@ func (a *app) view(c *ui.Context) {
 		}
 		ui.Row(c.Key("sessions")).Gap(5).Children(func() {
 			for _, s := range a.sessions {
-				if ui.Button(c.Key(s.ID), a.sessionLabel(s)).Disabled(a.busy).Clicked() {
+				if ui.Button(c.Key(s.ID), a.sessionName(s)+" · "+a.sessionMeta(s, time.Now())).Disabled(a.busy).Clicked() {
 					a.attach(s.ID)
 				}
 			}
@@ -382,6 +383,7 @@ func (a *app) poll() {
 			a.state, a.ssh, a.network = info.Status, ssh, network
 			if sessionsErr == nil {
 				a.sessions = sessions
+				a.reportAttachFailure()
 			}
 		})
 	}()
@@ -415,18 +417,22 @@ func (a *app) run(command string) {
 		err := launcher.Prepare(ctx, cfg)
 		var id string
 		var sessions []vm.Session
+		var listErr error
 		if err == nil {
 			id, err = launcher.Create(ctx, cfg.Project, command)
 		}
 		if err == nil {
-			sessions, _ = launcher.List(ctx)
+			sessions, listErr = launcher.List(ctx)
 		}
 		a.window.Update(func() {
 			a.launcher = launcher
 			a.finish(err)
 			a.state = previous
 			if err == nil {
-				a.state, a.sessions, a.ssh = "running", sessions, vm.SSHAvailable
+				a.state, a.ssh = "running", vm.SSHAvailable
+				if listErr == nil {
+					a.sessions = sessions
+				}
 				a.attach(id)
 			}
 			a.poll()
@@ -451,7 +457,7 @@ func (a *app) attach(id string) {
 		}
 		a.terms[id] = term
 	}
-	a.selected = id
+	a.selected, a.attachFailure = id, ""
 	a.networkOpen = false
 }
 
@@ -462,12 +468,25 @@ func (a *app) terminalExited(id string, term *terminal.Terminal, code int) {
 	delete(a.terms, id)
 	go term.Close()
 	if a.selected == id {
-		a.selected = ""
-		if code != 0 {
-			a.message = notice{key: "session.reattach"}
+		if code != 0 && !a.busy {
+			a.attachFailure = id
+			a.vmRevision++ // Reconcile with a poll started after the disconnect.
 		}
 	}
 	a.poll()
+}
+
+func (a *app) reportAttachFailure() {
+	if a.attachFailure == "" {
+		return
+	}
+	for _, s := range a.sessions {
+		if s.ID == a.attachFailure && !s.Exited {
+			a.message = notice{key: "session.reattach"}
+			break
+		}
+	}
+	a.attachFailure = ""
 }
 
 func (a *app) stop() {
@@ -484,6 +503,7 @@ func (a *app) stop() {
 			a.state = "running"
 			if err == nil {
 				a.state, a.selected, a.sessions = "stopped", "", nil
+				a.attachFailure = ""
 				a.network, a.ssh = nil, vm.SSHNotRunning
 				a.clearNetworkSnapshot()
 			}
@@ -509,18 +529,28 @@ func (a *app) finish(err error) {
 	a.busy, a.message = false, errorNotice("error.operation", err)
 }
 
-// sessionLabel 组合会话按钮的文案：命令名、短 ID，以及运行时长或退出码。
-func (a *app) sessionLabel(s vm.Session) string {
-	command := s.Command
-	if s.Exited {
-		command = tr("session.exited", a.locale)
+func (a *app) sessionName(s vm.Session) string {
+	if s.Command == "" || s.Command == vm.ExitedCommand {
+		return strings.TrimPrefix(s.ID, "cli-")
 	}
-	label := command + " " + s.ID[4:]
-	if s.Exited {
-		return label + " · " + fmt.Sprintf(tr("session.exitCode", a.locale), s.ExitCode)
+	if strings.Contains(s.Command, "Claude Code is not installed in this VM.") {
+		return tr("session.claudeCode", a.locale)
 	}
-	if d, ok := vm.SessionUptime(s, time.Now()); ok {
-		return label + " · " + formatUptime(d, a.locale)
+	return s.Command
+}
+
+func (a *app) sessionMeta(s vm.Session, now time.Time) string {
+	id := strings.TrimPrefix(s.ID, "cli-")
+	switch {
+	case s.Exited && s.ExitCodeKnown:
+		return id + " · " + fmt.Sprintf(tr("session.exitCode", a.locale), s.ExitCode)
+	case s.Exited && s.ExitSignal != "":
+		return id + " · " + fmt.Sprintf(tr("session.exitSignal", a.locale), s.ExitSignal)
+	case s.Exited:
+		return id + " · " + tr("session.exitUnknown", a.locale)
 	}
-	return label + " · " + tr("session.uptimeUnknown", a.locale)
+	if d, ok := vm.SessionUptime(s, now); ok {
+		return id + " · " + formatUptime(d, a.locale)
+	}
+	return id + " · " + tr("session.uptimeUnknown", a.locale)
 }

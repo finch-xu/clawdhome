@@ -45,7 +45,6 @@ func (a *app) networkPanel(c *ui.Context) {
 				a.networkOpen = false
 			}
 		})
-		ui.Text(c, a.egressSummary())
 		a.connectionTable(c.Key("connection"))
 		if a.networkMessage.key != "" {
 			a.noticeView(c.Key("network-message"), a.networkMessage)
@@ -59,34 +58,53 @@ func (a *app) networkPanel(c *ui.Context) {
 	})
 }
 
-// egressSummary 一行说明当前走哪个出口，以及是否正在切换。
-func (a *app) egressSummary() string {
-	if a.state != "running" {
-		return tr("network.nextLaunch", a.locale) + a.routeLabel(a.preferredRoute)
-	}
-	if a.network == nil || a.network.Route == "" {
-		return tr("network.unknownEgress", a.locale)
-	}
-	current := tr("network.currentEgress", a.locale) + a.routeLabel(a.network.Route)
-	if a.network.Route != a.preferredRoute {
-		current += tr("network.switchingTo", a.locale) + a.routeLabel(a.preferredRoute)
-	}
-	return current
+type connectionRow struct {
+	key, label, value, detail string
 }
 
-// connectionTable 把网关状态按字段列出来，取值全部来自 DescribeStatus 已经算好
-// 的 StatusView，不解析诊断文本。
-func (a *app) connectionTable(c *ui.Context) {
-	status := vm.DescribeStatus(a.state, a.ssh, a.cfg, a.network, time.Now())
-	rows := []struct{ label, value string }{
-		{"Clash", tr("proxy."+status.Proxy, a.locale) + detailSuffix(a.proxyDetail(status))},
-		{"Google", tr("probe."+status.Probe, a.locale) + detailSuffix(a.probeDetail(status))},
-		{tr("status.firewall", a.locale),
-			tr("firewall."+status.Firewall, a.locale) + detailSuffix(a.firewallDetail(status))},
+func (a *app) connectionRows(now time.Time) []connectionRow {
+	status := vm.DescribeStatus(a.state, a.ssh, a.cfg, a.network, now)
+	actual, doh := tr("network.unknownEgress", a.locale), tr("route.unknown", a.locale)
+	switch {
+	case a.state == vm.VMStopped || a.state == "":
+		actual = tr("network.nextLaunch", a.locale) + a.routeLabel(a.preferredRoute)
+		doh = tr("firewall.not-running", a.locale)
+	case a.state == vm.VMRunning && a.network != nil && now.Sub(a.network.UpdatedAt) > vm.StatusExpiry:
+		actual = tr("probe.expired", a.locale)
+	case a.state == vm.VMRunning && a.network != nil && a.network.Running && a.network.Route != "":
+		actual = a.routeLabel(a.network.Route)
+		if a.network.Route == egress.RouteClash && status.CurrentProxyAddr != "" {
+			actual += " · " + status.CurrentProxyAddr
+		}
+		if a.network.Route != a.preferredRoute {
+			actual += tr("network.switchingTo", a.locale) + a.routeLabel(a.preferredRoute)
+		}
+		switch a.network.Route {
+		case egress.RouteClash, egress.RouteSystem:
+			doh = tr("network.dohPolicy", a.locale)
+		case egress.RouteBlocked:
+			doh = tr("network.dohBlocked", a.locale)
+		}
 	}
-	ui.Column(c).Gap(2).Children(func() {
-		for _, row := range rows {
-			ui.Text(c.Key(row.label), row.label+"  "+row.value).SingleLine().Ellipsis("…")
+	return []connectionRow{
+		{"route", tr("network.route", a.locale), actual, ""},
+		{"handshake", tr("network.handshake", a.locale), tr("proxy."+status.Proxy, a.locale) + detailSuffix(a.proxyDetail(status)), status.ProxyError},
+		{"probe", tr("network.probe", a.locale), tr("probe."+status.Probe, a.locale) + detailSuffix(a.probeDetail(status)), status.ProbeReason},
+		{"firewall", tr("network.firewall", a.locale), tr("firewall."+status.Firewall, a.locale) + detailSuffix(a.firewallDetail(status)), ""},
+		{"doh", "DoH", doh, ""},
+	}
+}
+
+func (a *app) connectionTable(c *ui.Context) {
+	ui.Column(c).Gap(3).Children(func() {
+		for _, row := range a.connectionRows(time.Now()) {
+			ui.Row(c.Key(row.key)).Gap(10).Children(func() {
+				ui.Text(c, row.label).Width(112).Shrink(0).TextColor(c.Theme().TextMuted)
+				value := ui.Text(c, row.value).Grow(1).MinWidth(0).Wrap()
+				if row.detail != "" {
+					value.Tooltip(row.detail)
+				}
+			})
 		}
 	})
 }

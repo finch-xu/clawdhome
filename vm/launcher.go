@@ -29,9 +29,12 @@ type Session struct {
 	ID, Command string
 	// StartedAt 是 tmux 记录的会话创建时间；tmux 没给出可解析的时间戳时为零值。
 	StartedAt time.Time
-	// Exited 为真表示会话里的进程已结束，ExitCode 是它的退出码。
-	Exited   bool
-	ExitCode int
+	// ExitCode is valid only when ExitCodeKnown is true. A signaled process
+	// has ExitSignal instead. An exited pane may report neither.
+	Exited        bool
+	ExitCode      int
+	ExitCodeKnown bool
+	ExitSignal    string
 }
 
 const sessionSeparator = "::"
@@ -63,9 +66,10 @@ type VMInfo struct {
 // ExitedCommand 是已退出会话的命令占位值；界面按自己的语言显示它。
 const ExitedCommand = exitedSession
 
-// ParseSessions 解析 tmux list-sessions 的输出。每行形如
-// `id::command::created_unix_timestamp`；第三段缺失或无法解析时 StartedAt 留
-// 零值，该行照常保留。
+const sessionFormat = "#{session_name}::@v2::#{session_created}::#{pane_dead}::#{pane_dead_status}::#{pane_dead_signal}::#{pane_current_command}::#{pane_start_command}"
+
+// ParseSessions accepts current and legacy tmux rows. The final field in the
+// current format is the original command, so it may contain the separator.
 func ParseSessions(lines string) []Session {
 	var result []Session
 	for _, line := range strings.Split(lines, "\n") {
@@ -73,16 +77,29 @@ func ParseSessions(lines string) []Session {
 		if !ok || !strings.HasPrefix(id, "cli-") {
 			continue
 		}
-		command, rest, _ := strings.Cut(rest, sessionSeparator)
-		created, deadStatus, _ := strings.Cut(rest, sessionSeparator)
-		s := Session{ID: id, Command: command, Exited: command == exitedSession}
-		// tmux 的 session_created 是 unix 秒；0 也是合法的零值哨兵之外的真实
-		// 时间，所以只在解析成功且非 0 时才认。
-		if sec, err := strconv.ParseInt(strings.TrimSpace(created), 10, 64); err == nil && sec != 0 {
+		s := Session{ID: id}
+		var created, deadStatus string
+		if rest, ok := strings.CutPrefix(rest, "@v2"+sessionSeparator); ok {
+			fields := strings.SplitN(rest, sessionSeparator, 6)
+			if len(fields) != 6 {
+				continue
+			}
+			created, deadStatus = fields[0], fields[2]
+			s.Exited, s.Command = fields[1] == "1", fields[4]
+			if s.Exited {
+				s.ExitSignal = fields[3]
+				s.Command = fields[5]
+			}
+		} else {
+			s.Command, rest, _ = strings.Cut(rest, sessionSeparator)
+			created, deadStatus, _ = strings.Cut(rest, sessionSeparator)
+			s.Exited = s.Command == exitedSession
+		}
+		if sec, err := strconv.ParseInt(strings.TrimSpace(created), 10, 64); err == nil && sec > 0 {
 			s.StartedAt = time.Unix(sec, 0).UTC()
 		}
-		if code, err := strconv.Atoi(strings.TrimSpace(deadStatus)); err == nil {
-			s.ExitCode = code
+		if code, err := strconv.Atoi(strings.TrimSpace(deadStatus)); s.Exited && err == nil && code >= 0 && code <= 255 {
+			s.ExitCode, s.ExitCodeKnown = code, true
 		}
 		result = append(result, s)
 	}
@@ -302,7 +319,7 @@ func (l Launcher) TmuxArgs(args ...string) []string {
 
 func (l Launcher) List(ctx context.Context) ([]Session, error) {
 	result, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin,
-		l.TmuxArgs("list-sessions", "-F", "#{session_name}"+sessionSeparator+"#{?pane_dead,"+exitedSession+",#{pane_current_command}}"+sessionSeparator+"#{session_created}"+sessionSeparator+"#{pane_dead_status}")...))
+		l.TmuxArgs("list-sessions", "-F", sessionFormat)...))
 	if err != nil {
 		if strings.Contains(err.Error(), "no server running") ||
 			(strings.Contains(err.Error(), "error connecting to") && strings.Contains(err.Error(), "No such file")) {
