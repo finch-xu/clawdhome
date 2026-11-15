@@ -242,19 +242,21 @@ func (a *app) view(c *ui.Context) {
 }
 
 func (a *app) showDesktop() {
+	launcher := a.launcher
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), showDesktopTimeout)
 		defer cancel()
-		if err := a.launcher.ShowDesktop(ctx); err != nil {
+		if err := launcher.ShowDesktop(ctx); err != nil {
 			a.window.Update(func() { a.message = err.Error() })
 		}
 	}()
 }
 
 func (a *app) chooseDirectory() {
+	workspace, message := a.launcher.Workspace(), tr("dialog.chooseProject", a.locale)
 	go func() {
 		dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.realWindow, Directory: true,
-			DefaultPath: a.launcher.Workspace(), Message: tr("dialog.chooseProject", a.locale)})
+			DefaultPath: workspace, Message: message})
 		a.window.Update(func() {
 			if err != nil {
 				a.settingsMessage = err.Error()
@@ -270,19 +272,21 @@ func (a *app) poll() {
 		return
 	}
 	a.lastPoll, a.polling = time.Now(), true
+	// 后台读 launcher 的快照，不碰 a.launcher，与 app 字段的 UI 线程约定一致。
+	launcher := a.launcher
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
 		defer cancel()
-		info, vmErr := a.launcher.InspectVM(ctx)
-		network := a.launcher.NetworkStatus(info)
+		info, vmErr := launcher.InspectVM(ctx)
+		network := launcher.NetworkStatus(info)
 		var sessions []vm.Session
 		var sessionsErr error
 		ssh := vm.SSHNotRunning
 		if info.Status == "running" {
-			sessions, sessionsErr = a.launcher.List(ctx)
+			sessions, sessionsErr = launcher.List(ctx)
 			ssh = vm.SSHAvailable
 			if sessionsErr != nil {
-				if err := a.launcher.CheckSSH(ctx); err != nil {
+				if err := launcher.CheckSSH(ctx); err != nil {
 					ssh = vm.SSHUnavailable
 				}
 			}
@@ -393,10 +397,11 @@ func (a *app) attach(id string) {
 func (a *app) stop() {
 	a.busy, a.message = true, tr("vm.stopping", a.locale)
 	a.state = "stopping"
+	launcher := a.launcher
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 		defer cancel()
-		err := a.launcher.Stop(ctx)
+		err := launcher.Stop(ctx)
 		a.window.Update(func() {
 			a.finish(err)
 			a.state = "running"
@@ -413,10 +418,11 @@ func (a *app) stop() {
 func (a *app) kill() {
 	id := a.selected
 	a.busy = true
+	launcher := a.launcher
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), killTimeout)
 		defer cancel()
-		err := a.launcher.KillSession(ctx, id)
+		err := launcher.KillSession(ctx, id)
 		a.window.Update(func() { a.finish(err); a.poll() })
 	}()
 }

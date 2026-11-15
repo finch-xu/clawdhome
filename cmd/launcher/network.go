@@ -110,18 +110,19 @@ func (a *app) refreshNetwork(anthropic bool) {
 		return
 	}
 	a.networkBusy, a.networkMessage = true, tr("network.reading", a.locale)
+	launcher, loc := a.launcher, a.locale
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), networkRefreshTimeout)
 		defer cancel()
-		snapshot, err := a.launcher.NetworkSnapshot(ctx, anthropic)
+		snapshot, err := launcher.NetworkSnapshot(ctx, anthropic)
 		a.window.Update(func() {
 			a.networkBusy = false
 			if err != nil {
-				a.networkMessage = fmt.Sprintf(tr("network.readFailed", a.locale), err)
+				a.networkMessage = fmt.Sprintf(tr("network.readFailed", loc), err)
 				return
 			}
 			a.networkText = snapshot
-			a.networkMessage = tr("network.snapshotAt", a.locale) + time.Now().Format("15:04:05")
+			a.networkMessage = tr("network.snapshotAt", loc) + time.Now().Format("15:04:05")
 		})
 	}()
 }
