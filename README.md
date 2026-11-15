@@ -46,4 +46,4 @@ Claude Code 二进制安装在 VM 本地的 `~/.local/share/claude/`，入口是
 3. 将 tmux 3.6b 与 libevent 2.1.12 的上游发布源码归档放入 `.mvp-cache/`，文件名分别为 `tmux-3.6b.tar.gz` 和 `libevent-2.1.12-stable.tar.gz`。运行 `scripts/build-tmux.sh`。首次从启动器运行 CLI 时自动经 SSH 离线安装 tmux，并设置 `en-US`、`en_US` 和 `America/Los_Angeles`。也可在 VM 启动后运行 `scripts/setup-guest.sh` 手动配置。
 4. 用 Go 1.27.3 执行 `go build -o .mvp-cache/launcher ./cmd/launcher`。MyGo 0.9.0 指定的 arm64 `libghostty-vt.dylib` 放在 `.mvp-cache/mygo-native/` 后运行 `scripts/run-app.sh`。
 
-[实施计划](docs/superpowers/plans/2026-11-15-macos-cli-launcher-mvp.md) · [Lima 2.3.0](https://github.com/lima-vm/lima/releases/tag/v2.3.0) · [MyGo 终端插件](https://mygo.egoist.dev/docs/plugins/terminal)
+[Lima 2.3.0](https://github.com/lima-vm/lima/releases/tag/v2.3.0) · [MyGo 终端插件](https://mygo.egoist.dev/docs/plugins/terminal)
