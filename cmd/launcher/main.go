@@ -75,33 +75,35 @@ type app struct {
 	launcher vm.Launcher
 	// window 用于状态回写，测试里可替换；realWindow 持有真实窗口，
 	// 供 OnClosed/IsDestroyed/对话框父窗口这些窗口专属能力使用。
-	window          windowUpdater
-	realWindow      *mygo.Window
-	appearance      appearance
-	locale          locale
-	cfg             vm.Settings
-	command         string
-	message         string
-	state           string
-	sessions        []vm.Session
-	terms           map[string]*terminal.Terminal
-	selected        string
-	busy            bool
-	ssh             string
-	network         *egress.GatewayStatus
-	polling         bool
-	lastPoll        time.Time
-	settingsOpen    bool
-	detailsOpen     bool
-	draft           vm.Settings
-	settingsMessage string
-	portTestMessage string
-	portTesting     bool
-	networkOpen     bool
-	networkBusy     bool
-	networkText     string
-	networkMessage  string
-	preferredRoute  egress.Route
+	window           windowUpdater
+	realWindow       *mygo.Window
+	appearance       appearance
+	locale           locale
+	cfg              vm.Settings
+	command          string
+	message          string
+	state            string
+	sessions         []vm.Session
+	terms            map[string]*terminal.Terminal
+	selected         string
+	busy             bool
+	ssh              string
+	network          *egress.GatewayStatus
+	polling          bool
+	vmRevision       uint64
+	snapshotRevision uint64
+	lastPoll         time.Time
+	settingsOpen     bool
+	detailsOpen      bool
+	draft            vm.Settings
+	settingsMessage  string
+	portTestMessage  string
+	portTesting      bool
+	networkOpen      bool
+	networkBusy      bool
+	networkText      string
+	networkMessage   string
+	preferredRoute   egress.Route
 }
 
 func main() {
@@ -321,7 +323,7 @@ func (a *app) poll() {
 	}
 	a.lastPoll, a.polling = time.Now(), true
 	// 后台读 launcher 的快照，不碰 a.launcher，与 app 字段的 UI 线程约定一致。
-	launcher := a.launcher
+	launcher, revision := a.launcher, a.vmRevision
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
 		defer cancel()
@@ -341,12 +343,19 @@ func (a *app) poll() {
 		}
 		a.window.Update(func() {
 			a.polling = false
+			if revision != a.vmRevision {
+				a.poll()
+				return
+			}
 			if a.busy {
 				return
 			}
 			if vmErr != nil {
 				a.state, a.ssh, a.network = "unknown", vm.SSHUnknown, nil
 				return
+			}
+			if a.state == "running" && info.Status != "running" {
+				a.clearNetworkSnapshot()
 			}
 			a.state, a.ssh, a.network = info.Status, ssh, network
 			if sessionsErr == nil {
@@ -364,17 +373,12 @@ func (a *app) launchFromMenu(command string) func(*mygo.MenuItem, *mygo.Window) 
 	}
 }
 
-func (a *app) run(command string) { a.runWithDone(command, nil) }
-
-// runWithDone 在后台工作结束后关闭 done（如果非 nil），让测试可以同步等待。
-func (a *app) runWithDone(command string, done chan struct{}) {
+func (a *app) run(command string) {
 	if a.busy {
-		if done != nil {
-			close(done)
-		}
 		return
 	}
 	cfg := a.cfg
+	a.vmRevision++
 	a.busy, a.message = true, tr("session.starting", a.locale)
 	previous := a.state
 	if a.state != "running" {
@@ -405,31 +409,18 @@ func (a *app) runWithDone(command string, done chan struct{}) {
 			}
 			a.poll()
 		})
-		if done != nil {
-			close(done)
-		}
 	}()
 }
 
 func (a *app) attach(id string) {
 	if a.terms[id] == nil {
-		term, err := terminal.New(terminal.Options{
+		var term *terminal.Terminal
+		var err error
+		term, err = terminal.New(terminal.Options{
 			Command: append([]string{a.launcher.LimactlBin}, a.launcher.TmuxArgs("attach-session", "-t", "="+id)...),
 			Env:     []string{"LIMA_HOME=" + a.launcher.Home},
 			OnExit: func(code int) {
-				a.window.Update(func() {
-					if code != 0 {
-						a.message = tr("session.reattach", a.locale)
-					}
-					if closed := a.terms[id]; closed != nil {
-						delete(a.terms, id)
-						go closed.Close()
-					}
-					if a.selected == id {
-						a.selected = ""
-					}
-					a.poll()
-				})
+				a.window.Update(func() { a.terminalExited(id, term, code) })
 			},
 		})
 		if err != nil {
@@ -442,7 +433,23 @@ func (a *app) attach(id string) {
 	a.networkOpen = false
 }
 
+func (a *app) terminalExited(id string, term *terminal.Terminal, code int) {
+	if term == nil || a.terms[id] != term {
+		return
+	}
+	delete(a.terms, id)
+	go term.Close()
+	if a.selected == id {
+		a.selected = ""
+		if code != 0 {
+			a.message = tr("session.reattach", a.locale)
+		}
+	}
+	a.poll()
+}
+
 func (a *app) stop() {
+	a.vmRevision++
 	a.busy, a.message = true, tr("vm.stopping", a.locale)
 	a.state = "stopping"
 	launcher := a.launcher
@@ -456,7 +463,7 @@ func (a *app) stop() {
 			if err == nil {
 				a.state, a.selected, a.sessions = "stopped", "", nil
 				a.network, a.ssh = nil, vm.SSHNotRunning
-				a.networkText, a.networkMessage = "", ""
+				a.clearNetworkSnapshot()
 			}
 			a.poll()
 		})
@@ -465,6 +472,7 @@ func (a *app) stop() {
 
 func (a *app) kill() {
 	id := a.selected
+	a.vmRevision++
 	a.busy = true
 	launcher := a.launcher
 	go func() {

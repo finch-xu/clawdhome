@@ -33,13 +33,7 @@ func (a *app) networkPanel(c *ui.Context) {
 			oldGateway := a.state == "running" && (a.network == nil || a.network.Route == "")
 			for _, route := range []egress.Route{egress.RouteClash, egress.RouteSystem, egress.RouteBlocked} {
 				if ui.Button(c.Key(string(route)), a.routeLabel(route)).Disabled(a.busy || oldGateway || route == a.preferredRoute).Clicked() {
-					if err := a.launcher.SetRoute(route); err != nil {
-						a.networkMessage = err.Error()
-					} else {
-						a.preferredRoute = route
-						a.networkMessage = ""
-						a.poll()
-					}
+					a.setRoute(route)
 				}
 			}
 			if ui.Button(c, tr("network.refresh", a.locale)).Disabled(a.networkBusy || a.state != "running").Clicked() {
@@ -105,17 +99,36 @@ func detailSuffix(detail string) string {
 	return "  ·  " + detail
 }
 
+func (a *app) setRoute(route egress.Route) {
+	if err := a.launcher.SetRoute(route); err != nil {
+		a.networkMessage = err.Error()
+		return
+	}
+	a.preferredRoute = route
+	a.networkMessage = ""
+	a.poll()
+}
+
+func (a *app) clearNetworkSnapshot() {
+	a.snapshotRevision++
+	a.networkBusy = false
+	a.networkText, a.networkMessage = "", ""
+}
+
 func (a *app) refreshNetwork(anthropic bool) {
 	if a.state != "running" || a.networkBusy {
 		return
 	}
 	a.networkBusy, a.networkMessage = true, tr("network.reading", a.locale)
-	launcher, loc := a.launcher, a.locale
+	launcher, loc, revision := a.launcher, a.locale, a.snapshotRevision
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), networkRefreshTimeout)
 		defer cancel()
 		snapshot, err := launcher.NetworkSnapshot(ctx, anthropic)
 		a.window.Update(func() {
+			if revision != a.snapshotRevision {
+				return
+			}
 			a.networkBusy = false
 			if err != nil {
 				a.networkMessage = fmt.Sprintf(tr("network.readFailed", loc), err)

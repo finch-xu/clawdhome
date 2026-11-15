@@ -15,6 +15,21 @@ type syncUpdater struct{}
 
 func (syncUpdater) Update(fn func()) { fn() }
 
+type queuedUpdater chan func()
+
+func (q queuedUpdater) Update(fn func()) { q <- fn }
+
+func (q queuedUpdater) next(t *testing.T) func() {
+	t.Helper()
+	select {
+	case fn := <-q:
+		return fn
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for a UI update")
+		return nil
+	}
+}
+
 // stubAppearance 记录被套用的偏好，不碰 MyGo 的全局 API（那些调用在没有事件
 // 循环的测试进程里会死锁）。
 type stubAppearance struct {
@@ -52,12 +67,12 @@ func TestRunRollsBackStateWhenPrepareFails(t *testing.T) {
 	root := t.TempDir()
 	l := vm.Launcher{Root: root, Home: t.TempDir(), ShareRoot: t.TempDir(),
 		LimactlBin: filepath.Join(root, "no-such-limactl")}
-	a := &app{window: syncUpdater{}, launcher: l, state: "stopped",
+	q := make(queuedUpdater, 4)
+	a := &app{window: q, launcher: l, state: "stopped",
 		terms: map[string]*terminal.Terminal{}}
 
-	done := make(chan struct{})
-	a.runWithDone("/bin/zsh", done)
-	<-done
+	a.run("/bin/zsh")
+	q.next(t)()
 
 	if a.state != "stopped" {
 		t.Fatalf("state = %q, want rollback to %q after a failed run", a.state, "stopped")
@@ -68,14 +83,13 @@ func TestRunRollsBackStateWhenPrepareFails(t *testing.T) {
 	if a.busy {
 		t.Fatal("busy should be cleared once run finishes")
 	}
+	q.next(t)() // Reconcile with the backend in a separate UI event.
 }
 
 func TestRunIsIgnoredWhileBusy(t *testing.T) {
 	a := &app{window: syncUpdater{}, busy: true, state: "running", message: "正在启动会话…"}
 
-	done := make(chan struct{})
-	a.runWithDone("/bin/zsh", done)
-	<-done
+	a.run("/bin/zsh")
 
 	if a.state != "running" {
 		t.Fatalf("state = %q, want it untouched while busy", a.state)
@@ -99,13 +113,13 @@ func TestRunWorksOnALauncherCopy(t *testing.T) {
 	}
 	l := vm.Launcher{Root: root, Home: t.TempDir(), ShareRoot: linkShare,
 		LimactlBin: filepath.Join(root, "no-such-limactl")}
-	a := &app{window: syncUpdater{}, launcher: l, state: "stopped",
+	q := make(queuedUpdater, 4)
+	a := &app{window: q, launcher: l, state: "stopped",
 		cfg:   vm.Settings{Project: filepath.Join(linkShare, "workspace")},
 		terms: map[string]*terminal.Terminal{}}
 
-	done := make(chan struct{})
-	a.runWithDone("/bin/zsh", done)
-	<-done
+	a.run("/bin/zsh")
+	q.next(t)()
 
 	// run 失败（limactl 缺失）后，解析过的 ShareRoot 仍然要写回 a.launcher，
 	// 否则下次 Create 会用过期路径算 VirtioFS 卷名。
@@ -117,6 +131,7 @@ func TestRunWorksOnALauncherCopy(t *testing.T) {
 		t.Fatalf("a.launcher.ShareRoot = %q, want the resolved %q written back through window.Update",
 			a.launcher.ShareRoot, want)
 	}
+	q.next(t)()
 }
 
 // markWorkspace 在 root 下建出 marker 文件，再建出 exeDir 并返回它。marker 是
@@ -190,5 +205,59 @@ func TestGhosttyLibraryPathUsesTheCachedDylib(t *testing.T) {
 func TestGhosttyLibraryPathIsEmptyWithoutTheCachedDylib(t *testing.T) {
 	if got := ghosttyLibraryPath(t.TempDir()); got != "" {
 		t.Fatalf("ghosttyLibraryPath = %q, want \"\" so the framework keeps looking", got)
+	}
+}
+
+func fakeLauncher(t *testing.T, script string) vm.Launcher {
+	t.Helper()
+	root := t.TempDir()
+	bin := filepath.Join(root, "limactl")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"+script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return vm.Launcher{Root: root, Home: root, LimactlBin: bin}
+}
+
+func TestStopDiscardsOlderPollAndNetworkSnapshot(t *testing.T) {
+	q := make(queuedUpdater, 4)
+	a := &app{window: q, state: "running", ssh: vm.SSHAvailable,
+		launcher: fakeLauncher(t, `
+case "$1" in
+	list) printf '{"name":"cli-mvp","status":"Running"}\n';;
+	shell) echo old-result;;
+	stop) touch "$LIMA_HOME/stopped";;
+esac
+`)}
+	a.poll()
+	applyPoll := q.next(t)
+	a.refreshNetwork(false)
+	applySnapshot := q.next(t)
+	a.stop()
+	q.next(t)()
+	applyPoll()
+	applySnapshot()
+	if a.state != "stopped" || a.networkText != "" || a.networkBusy {
+		t.Fatalf("old callbacks after stop: state=%q, snapshot=%q, networkBusy=%v", a.state, a.networkText, a.networkBusy)
+	}
+	q.next(t)()
+}
+
+func TestKillFailureClearsBusyAndKeepsSelection(t *testing.T) {
+	q := make(queuedUpdater, 4)
+	a := &app{window: q, selected: "cli-a", state: "running", launcher: fakeLauncher(t, "exit 1")}
+	a.kill()
+	q.next(t)()
+	if a.busy || a.selected != "cli-a" || a.message == "" {
+		t.Fatalf("selection=%q, busy=%v, message=%q", a.selected, a.busy, a.message)
+	}
+	q.next(t)()
+}
+
+func TestOldTerminalExitDoesNotClearNewAttachment(t *testing.T) {
+	old, current := new(terminal.Terminal), new(terminal.Terminal)
+	a := &app{selected: "cli-a", terms: map[string]*terminal.Terminal{"cli-a": current}}
+	a.terminalExited("cli-a", old, 1)
+	if a.selected != "cli-a" || a.terms["cli-a"] != current || a.message != "" {
+		t.Fatal("an old terminal's exit changed the new attachment")
 	}
 }
