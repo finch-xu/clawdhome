@@ -128,11 +128,6 @@ func commandOutput(cmd *exec.Cmd) ([]byte, error) {
 	return out, nil
 }
 
-func (l launcher) vmStatus(ctx context.Context) (string, error) {
-	vm, err := l.inspectVM(ctx)
-	return vm.Status, err
-}
-
 func (l launcher) inspectVM(ctx context.Context) (vmInfo, error) {
 	out, err := commandOutput(l.cmd(ctx, "", l.lima, "list", "--json"))
 	if err != nil {
@@ -217,7 +212,10 @@ func (l *launcher) prepare(ctx context.Context, cfg settings) error {
 			return err
 		}
 	} else if !vm.hasMounts(mounts) || vm.Config.TimeZone != guestTimeZone {
-		encoded, _ := json.Marshal(mounts)
+		encoded, err := json.Marshal(mounts)
+		if err != nil {
+			return fmt.Errorf("序列化共享目录配置失败: %w", err)
+		}
 		expression := ".mounts = " + string(encoded) + " | .timezone = " + strconv.Quote(guestTimeZone)
 		if _, err := commandOutput(l.cmd(ctx, cfg.Port, l.lima, "edit", "--tty=false", "--set", expression, instance)); err != nil {
 			return err
