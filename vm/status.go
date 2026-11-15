@@ -69,12 +69,42 @@ var (
 	}
 )
 
-// StatusView 把网关状态拆成界面要显示的几项。VM/SSH/Proxy/Probe/Firewall 是
-// 状态码，由界面查字典翻译；带 Detail 后缀的字段是诊断信息（含地址、时间和
-// 网关给出的原因），原样显示。
+// 代理和防火墙详情的状态码。
+const (
+	ProxyDetailNone        = ""
+	ProxyDetailSavedPort   = "saved-port"
+	ProxyDetailCurrentAddr = "current-addr"
+	ProxyDetailPortCleared = "port-cleared"
+	ProxyDetailPortPending = "port-pending"
+	ProxyDetailEgressRoute = "egress-route"
+
+	FirewallDetailNone        = ""
+	FirewallDetailNoGateway   = "no-gateway"
+	FirewallDetailStale       = "stale"
+	FirewallDetailBlocked     = "blocked"
+	FirewallDetailProxyOnly   = "proxy-only"
+	FirewallDetailSystemRoute = "system-route"
+	FirewallDetailLeaseExpiry = "lease-expiry"
+)
+
+// StatusView 把网关状态拆成界面要显示的几项。所有状态和详情都是状态码，由界面
+// 查字典翻译；带数据的字段（地址、端口、时间）供界面套进文案模板。网关自己给出
+// 的错误原文放在 ProxyError/ProbeReason 里，原样显示——它们是诊断信息，和
+// curl 的报错一样不随界面语言变化。
 type StatusView struct {
-	VM, SSH, Proxy, Probe, Firewall          string
-	ProxyDetail, ProbeDetail, FirewallDetail string
+	VM, SSH, Proxy, Probe, Firewall string
+	// ProxyDetail/FirewallDetail 是详情的状态码。
+	ProxyDetail, FirewallDetail string
+	// SavedProxyAddr 是设置里存的代理地址，CurrentProxyAddr 是网关当前在用的。
+	SavedProxyAddr, CurrentProxyAddr string
+	// PendingPort 是下次启动才生效的端口。
+	PendingPort string
+	// EgressRoute 是代理停用时实际走的出口名。
+	EgressRoute string
+	// ProxyError 和 ProbeReason 是网关给出的原文。
+	ProxyError, ProbeReason string
+	// LastProbe 是最近一次探测的时间，零值表示还没探测过。
+	LastProbe time.Time
 }
 
 func DescribeStatus(vmState, ssh string, cfg Settings, state *egress.GatewayStatus, now time.Time) StatusView {
@@ -86,28 +116,28 @@ func DescribeStatus(vmState, ssh string, cfg Settings, state *egress.GatewayStat
 	if cfg.Port == "" {
 		s.Proxy = ProxyUnconfigured
 	} else {
-		s.ProxyDetail = "已保存 " + net.JoinHostPort("127.0.0.1", cfg.Port)
+		s.ProxyDetail, s.SavedProxyAddr = ProxyDetailSavedPort, net.JoinHostPort("127.0.0.1", cfg.Port)
 	}
 	if vmState == "" || vmState == "stopped" {
 		s.Probe, s.Firewall = ProbeSkipped, FirewallNotRunning
 		return s
 	}
 	if state == nil {
-		s.FirewallDetail = "尚未收到当前 VM 的网关状态"
+		s.FirewallDetail = FirewallDetailNoGateway
 		return s
 	}
 	_, port, _ := net.SplitHostPort(state.ProxyAddr)
-	s.ProxyDetail = "当前 " + state.ProxyAddr
+	s.ProxyDetail, s.CurrentProxyAddr = ProxyDetailCurrentAddr, state.ProxyAddr
 	if port != cfg.Port {
 		if cfg.Port == "" {
-			s.ProxyDetail += " · 已清空设置，下次启动生效"
+			s.ProxyDetail = ProxyDetailPortCleared
 		} else {
-			s.ProxyDetail += " · 下次启动使用 " + cfg.Port
+			s.ProxyDetail, s.PendingPort = ProxyDetailPortPending, cfg.Port
 		}
 	}
 	if now.Sub(state.UpdatedAt) > StatusExpiry {
 		s.Proxy, s.Probe = ProxyUnknown, ProbeExpired
-		s.FirewallDetail = "网关状态长时间未更新"
+		s.FirewallDetail = FirewallDetailStale
 		return s
 	}
 	if code, ok := proxyStatusCodes[state.Proxy]; ok {
@@ -115,27 +145,22 @@ func DescribeStatus(vmState, ssh string, cfg Settings, state *egress.GatewayStat
 	}
 	if state.Proxy == egress.ProxyDisabled {
 		s.Proxy = ProxyDisabled
-		s.ProxyDetail = "出口 " + routeLabel(state.Route)
+		s.ProxyDetail, s.EgressRoute = ProxyDetailEgressRoute, string(state.Route)
 	}
-	if state.ProxyError != "" {
-		s.ProxyDetail += " · " + state.ProxyError
-	}
+	s.ProxyError = state.ProxyError
 	if code, ok := probeStatusCodes[state.Probe]; ok {
 		s.Probe = code
 	}
-	s.ProbeDetail = state.Reason
-	if !state.LastProbe.IsZero() {
-		s.ProbeDetail += " · 上次 " + state.LastProbe.Local().Format("01-02 15:04:05")
-	}
-	s.Firewall, s.FirewallDetail = FirewallBlocked, "公网新连接已阻断，已有公网连接在关断时关闭"
+	s.ProbeReason, s.LastProbe = state.Reason, state.LastProbe
+	s.Firewall, s.FirewallDetail = FirewallBlocked, FirewallDetailBlocked
 	if state.Online && now.Before(state.Until) {
-		s.Firewall, s.FirewallDetail = FirewallProxyOnly, "仅 IPv4 TCP 和 DoH 经代理出站"
+		s.Firewall, s.FirewallDetail = FirewallProxyOnly, FirewallDetailProxyOnly
 		if state.Route == egress.RouteSystem {
-			s.Firewall, s.FirewallDetail = FirewallSystemRoute, "仅 IPv4 TCP 和 DoH 经宿主机系统路由出站"
+			s.Firewall, s.FirewallDetail = FirewallSystemRoute, FirewallDetailSystemRoute
 		}
 	} else if !state.Until.IsZero() && !now.Before(state.Until) {
 		s.Probe = ProbeExpired
-		s.FirewallDetail = "探测租期已过，网关按策略关闭公网连接"
+		s.FirewallDetail = FirewallDetailLeaseExpiry
 	}
 	return s
 }

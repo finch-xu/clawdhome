@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -50,6 +51,23 @@ type windowUpdater interface {
 	Update(func())
 }
 
+// appearance 套用外观和语言偏好。这两件事要走 MyGo 的全局 API，而那些调用会
+// 把工作派发到主线程并等待完成——测试进程里没有事件循环，直接调会死锁，所以
+// 做成接口由测试注入空实现。
+type appearance interface {
+	SetTheme(source string)
+	SetLocale(tag string)
+	// SystemLocale 返回系统当前选用的语言标签。
+	SystemLocale() string
+}
+
+// mygoAppearance 是跑在真实应用里的实现。
+type mygoAppearance struct{}
+
+func (mygoAppearance) SetTheme(source string) { mygo.Theme.SetSource(toThemeSource(source)) }
+func (mygoAppearance) SetLocale(tag string)   { mygo.App.SetLocale(localePrefTag(tag)) }
+func (mygoAppearance) SystemLocale() string   { return mygo.App.Locale() }
+
 // app 的所有字段只在 UI 线程读写：view 渲染回调、按钮点击回调，或
 // window.Update(func(){...}) 回调内部。后台 goroutine 只读取启动前拷贝的
 // 快照值，结果一律通过 window.Update 写回。
@@ -59,6 +77,7 @@ type app struct {
 	// 供 OnClosed/IsDestroyed/对话框父窗口这些窗口专属能力使用。
 	window          windowUpdater
 	realWindow      *mygo.Window
+	appearance      appearance
 	locale          locale
 	cfg             vm.Settings
 	command         string
@@ -110,18 +129,15 @@ func main() {
 	if err := l.EnsureShareDirs(); err != nil {
 		log.Fatal(err)
 	}
-	a := &app{launcher: l, cfg: l.Settings(), command: terminalCommand, state: "unknown", ssh: vm.SSHChecking, terms: make(map[string]*terminal.Terminal)}
+	a := &app{launcher: l, cfg: l.Settings(), appearance: mygoAppearance{}, command: terminalCommand, state: "unknown", ssh: vm.SSHChecking, terms: make(map[string]*terminal.Terminal)}
 	a.preferredRoute = egress.ReadRoute(l.Home)
 
 	// 语言和外观都在 App.Run 之前设置：英语是默认语言，没有保存过偏好时由
 	// MyGo 按系统语言选择；保存过则覆盖。
 	mygo.App.SetLanguages(string(localeEN), string(localeZhHans))
-	if a.cfg.LocalePref != "" {
-		mygo.App.SetLocale(a.cfg.LocalePref)
-	}
-	if a.cfg.ThemePref != "" {
-		mygo.Theme.SetSource(toThemeSource(a.cfg.ThemePref))
-	}
+	// 空串让 MyGo 清掉它自己存的覆盖，回到跟随系统；非法值也走这条路。
+	a.appearance.SetLocale(a.cfg.LocalePref)
+	a.appearance.SetTheme(a.cfg.ThemePref)
 
 	mygo.App.WhenReady(func() {
 		a.locale = toLocale(mygo.App.Locale())
@@ -434,13 +450,16 @@ func (a *app) finish(err error) {
 	}
 }
 
-// sessionLabel 组合会话按钮的文案：命令名、短 ID 和运行时长。
+// sessionLabel 组合会话按钮的文案：命令名、短 ID，以及运行时长或退出码。
 func (a *app) sessionLabel(s vm.Session) string {
 	command := s.Command
-	if command == vm.ExitedCommand {
+	if s.Exited {
 		command = tr("session.exited", a.locale)
 	}
 	label := command + " " + s.ID[4:]
+	if s.Exited {
+		return label + " · " + fmt.Sprintf(tr("session.exitCode", a.locale), s.ExitCode)
+	}
 	if d, ok := vm.SessionUptime(s, time.Now()); ok {
 		return label + " · " + formatUptime(d, a.locale)
 	}

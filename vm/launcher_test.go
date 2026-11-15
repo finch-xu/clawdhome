@@ -18,7 +18,7 @@ func TestSessionListOnlyIncludesLauncherSessions(t *testing.T) {
 		{ID: "cli-56", Command: "python3"},
 		{ID: "cli-90", Command: "vim"},
 		// 已退出的会话保留原始标记，由界面按自己的语言显示。
-		{ID: "cli-91", Command: ExitedCommand},
+		{ID: "cli-91", Command: ExitedCommand, Exited: true},
 	}
 	if got := ParseSessions(input); !reflect.DeepEqual(got, want) {
 		t.Fatalf("sessions = %#v, want %#v", got, want)
@@ -190,5 +190,37 @@ func TestSessionUptimeClampsNegativeToZero(t *testing.T) {
 	got, ok := SessionUptime(Session{StartedAt: now.Add(time.Hour)}, now) // 时钟漂移
 	if !ok || got != 0 {
 		t.Fatalf("SessionUptime() = (%v, %v), want (0, true) clamped, never negative", got, ok)
+	}
+}
+
+func TestParseSessionsCapturesExitCode(t *testing.T) {
+	createdAt := time.Date(2026, 11, 15, 11, 0, 0, 0, time.UTC)
+	lines := fmt.Sprintf("cli-abc1::%s::%d::1\n", ExitedCommand, createdAt.Unix())
+	sessions := ParseSessions(lines)
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	if !sessions[0].Exited {
+		t.Fatal("Exited = false, want true for a dead pane")
+	}
+	if sessions[0].ExitCode != 1 {
+		t.Fatalf("ExitCode = %d, want 1", sessions[0].ExitCode)
+	}
+}
+
+func TestParseSessionsLeavesLiveSessionsUnexited(t *testing.T) {
+	lines := fmt.Sprintf("cli-abc1::claude::%d::\n", time.Now().Unix())
+	sessions := ParseSessions(lines)
+	if sessions[0].Exited {
+		t.Fatal("Exited = true, want false while the pane is alive")
+	}
+}
+
+func TestSessionUptimeUnavailableForExitedSession(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	s := Session{StartedAt: now.Add(-42 * time.Minute), Exited: true}
+	// 已结束的会话不该再报「运行 42 分钟」——那和「已退出」自相矛盾。
+	if got, ok := SessionUptime(s, now); ok || got != 0 {
+		t.Fatalf("SessionUptime() = (%v, %v), want (0, false) for an exited session", got, ok)
 	}
 }

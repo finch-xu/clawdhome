@@ -51,3 +51,29 @@ func TestTestPortRejectsInvalidPortWithoutHandshake(t *testing.T) {
 		}
 	}
 }
+
+func TestCancelRevertsAppliedAppearanceAndLanguage(t *testing.T) {
+	// 外观和语言是点一下就生效的，所以取消必须把它们退回已保存的值，
+	// 否则界面会和 launcher.json 不一致，下次启动又变回去。
+	look := &stubAppearance{}
+	a := &app{window: syncUpdater{}, appearance: look, settingsOpen: true,
+		cfg:    vm.Settings{ThemePref: "", LocalePref: ""},
+		draft:  vm.Settings{ThemePref: "dark", LocalePref: string(localeZhHans)},
+		locale: localeZhHans}
+
+	a.cancelSettings()
+
+	if look.theme != "" {
+		t.Fatalf("appearance.SetTheme(%q), want it reverted to the saved empty pref", look.theme)
+	}
+	if look.locale != "" {
+		t.Fatalf("appearance.SetLocale(%q), want it cleared back to follow-system", look.locale)
+	}
+
+	if a.settingsOpen {
+		t.Fatal("cancel should close the settings panel")
+	}
+	if a.draft != a.cfg {
+		t.Fatalf("draft = %+v, want it reverted to cfg %+v", a.draft, a.cfg)
+	}
+}

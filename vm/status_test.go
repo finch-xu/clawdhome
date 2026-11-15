@@ -1,7 +1,6 @@
 package vm
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ func TestStatusDistinguishesWorkingProxyFromBlockedEgress(t *testing.T) {
 	snap := egress.GatewayStatus{Running: true, ProxyAddr: "127.0.0.1:1234", Proxy: egress.ProxyConnected,
 		Probe: egress.ProbeUnreachable, Reason: "Google HTTP 503", LastProbe: now, UpdatedAt: now}
 	status := DescribeStatus("running", SSHAvailable, Settings{Port: "1234"}, &snap, now)
-	if status.Proxy != ProxyConnected || status.Probe != ProbeUnreachable || status.Firewall != FirewallBlocked || !strings.Contains(status.ProbeDetail, "Google HTTP 503") {
+	if status.Proxy != ProxyConnected || status.Probe != ProbeUnreachable || status.Firewall != FirewallBlocked || status.ProbeReason != "Google HTTP 503" {
 		t.Fatalf("status = %+v", status)
 	}
 	snap.Online, snap.Probe, snap.Until = true, egress.ProbeReachable, now
@@ -22,7 +21,8 @@ func TestStatusDistinguishesWorkingProxyFromBlockedEgress(t *testing.T) {
 		t.Fatalf("expired status = %+v", status)
 	}
 	status = DescribeStatus("running", SSHAvailable, Settings{Port: "2345"}, &snap, now.Add(2*time.Minute))
-	if status.Proxy != ProxyUnknown || status.Firewall != FirewallUnknown || !strings.Contains(status.ProxyDetail, "下次启动使用 2345") {
+	if status.Proxy != ProxyUnknown || status.Firewall != FirewallUnknown ||
+		status.ProxyDetail != ProxyDetailPortPending || status.PendingPort != "2345" {
 		t.Fatalf("saved port and stale snapshot status = %+v", status)
 	}
 }
@@ -52,8 +52,8 @@ func TestDescribeStatusWhenVMNotRunning(t *testing.T) {
 
 func TestDescribeStatusWhenGatewayStatusMissing(t *testing.T) {
 	got := DescribeStatus("running", SSHAvailable, Settings{Port: "7890"}, nil, time.Now())
-	if got.FirewallDetail != "尚未收到当前 VM 的网关状态" {
-		t.Fatalf("firewallDetail = %q, want the missing-gateway note", got.FirewallDetail)
+	if got.FirewallDetail != FirewallDetailNoGateway {
+		t.Fatalf("FirewallDetail = %q, want %q", got.FirewallDetail, FirewallDetailNoGateway)
 	}
 }
 
@@ -102,6 +102,44 @@ func TestDescribeStatusReturnsCodesNotLocalizedText(t *testing.T) {
 		for _, r := range code {
 			if r > 127 {
 				t.Fatalf("%s = %q contains non-ASCII; status fields must be codes, not localized text", name, code)
+			}
+		}
+	}
+}
+
+func TestStatusDetailCodesCarryNoLocalizedProse(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name  string
+		vm    string
+		cfg   Settings
+		state *egress.GatewayStatus
+		at    time.Time
+	}{
+		{"stopped", "stopped", Settings{}, nil, now},
+		{"no gateway", "running", Settings{Port: "7890"}, nil, now},
+		{"stale", "running", Settings{Port: "7890"},
+			&egress.GatewayStatus{Running: true, UpdatedAt: now.Add(-2 * time.Minute)}, now},
+		{"blocked", "running", Settings{Port: "7890"},
+			&egress.GatewayStatus{Running: true, ProxyAddr: "127.0.0.1:7890",
+				Proxy: egress.ProxyConnected, Probe: egress.ProbeUnreachable, UpdatedAt: now}, now},
+		{"proxy only", "running", Settings{Port: "7890"},
+			&egress.GatewayStatus{Running: true, Online: true, ProxyAddr: "127.0.0.1:7890",
+				Proxy: egress.ProxyConnected, Probe: egress.ProbeReachable,
+				UpdatedAt: now, Until: now.Add(time.Minute)}, now},
+	}
+	for _, c := range cases {
+		got := DescribeStatus(c.vm, SSHAvailable, c.cfg, c.state, c.at)
+		for name, code := range map[string]string{
+			"ProxyDetail": got.ProxyDetail, "ProbeReason": got.ProbeReason,
+			"FirewallDetail": got.FirewallDetail,
+		} {
+			for _, r := range code {
+				if r > 127 {
+					t.Errorf("%s: %s = %q contains localized prose; details must be codes the ui translates",
+						c.name, name, code)
+					break
+				}
 			}
 		}
 	}

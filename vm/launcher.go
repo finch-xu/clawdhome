@@ -29,6 +29,9 @@ type Session struct {
 	ID, Command string
 	// StartedAt 是 tmux 记录的会话创建时间；tmux 没给出可解析的时间戳时为零值。
 	StartedAt time.Time
+	// Exited 为真表示会话里的进程已结束，ExitCode 是它的退出码。
+	Exited   bool
+	ExitCode int
 }
 
 const sessionSeparator = "::"
@@ -38,7 +41,8 @@ const exitedSession = "@vm-exited"
 // 时返回不可用；创建时间晚于 now（宿主与 guest 的时钟漂移）时钳制为 0，不返回
 // 负数时长。
 func SessionUptime(s Session, now time.Time) (time.Duration, bool) {
-	if s.StartedAt.IsZero() {
+	// 已结束的会话没有「已运行多久」可言，报不可用而不是继续累加。
+	if s.Exited || s.StartedAt.IsZero() {
 		return 0, false
 	}
 	if d := now.Sub(s.StartedAt); d > 0 {
@@ -69,10 +73,16 @@ func ParseSessions(lines string) []Session {
 		if !ok || !strings.HasPrefix(id, "cli-") {
 			continue
 		}
-		command, created, _ := strings.Cut(rest, sessionSeparator)
-		s := Session{ID: id, Command: command}
-		if sec, err := strconv.ParseInt(strings.TrimSpace(created), 10, 64); err == nil {
+		command, rest, _ := strings.Cut(rest, sessionSeparator)
+		created, deadStatus, _ := strings.Cut(rest, sessionSeparator)
+		s := Session{ID: id, Command: command, Exited: command == exitedSession}
+		// tmux 的 session_created 是 unix 秒；0 也是合法的零值哨兵之外的真实
+		// 时间，所以只在解析成功且非 0 时才认。
+		if sec, err := strconv.ParseInt(strings.TrimSpace(created), 10, 64); err == nil && sec != 0 {
 			s.StartedAt = time.Unix(sec, 0).UTC()
+		}
+		if code, err := strconv.Atoi(strings.TrimSpace(deadStatus)); err == nil {
+			s.ExitCode = code
 		}
 		result = append(result, s)
 	}
@@ -289,7 +299,7 @@ func (l Launcher) TmuxArgs(args ...string) []string {
 
 func (l Launcher) List(ctx context.Context) ([]Session, error) {
 	result, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin,
-		l.TmuxArgs("list-sessions", "-F", "#{session_name}"+sessionSeparator+"#{?pane_dead,"+exitedSession+",#{pane_current_command}}"+sessionSeparator+"#{session_created}")...))
+		l.TmuxArgs("list-sessions", "-F", "#{session_name}"+sessionSeparator+"#{?pane_dead,"+exitedSession+",#{pane_current_command}}"+sessionSeparator+"#{session_created}"+sessionSeparator+"#{pane_dead_status}")...))
 	if err != nil {
 		if strings.Contains(err.Error(), "no server running") ||
 			(strings.Contains(err.Error(), "error connecting to") && strings.Contains(err.Error(), "No such file")) {

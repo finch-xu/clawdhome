@@ -86,10 +86,10 @@ func (a *app) egressSummary() string {
 func (a *app) connectionTable(c *ui.Context) {
 	status := vm.DescribeStatus(a.state, a.ssh, a.cfg, a.network, time.Now())
 	rows := []struct{ label, value string }{
-		{"Clash", tr("proxy."+status.Proxy, a.locale) + detailSuffix(status.ProxyDetail)},
-		{"Google", tr("probe."+status.Probe, a.locale) + detailSuffix(status.ProbeDetail)},
+		{"Clash", tr("proxy."+status.Proxy, a.locale) + detailSuffix(a.proxyDetail(status))},
+		{"Google", tr("probe."+status.Probe, a.locale) + detailSuffix(a.probeDetail(status))},
 		{tr("status.firewall", a.locale),
-			tr("firewall."+status.Firewall, a.locale) + detailSuffix(status.FirewallDetail)},
+			tr("firewall."+status.Firewall, a.locale) + detailSuffix(a.firewallDetail(status))},
 	}
 	ui.Column(c).Gap(2).Children(func() {
 		for _, row := range rows {

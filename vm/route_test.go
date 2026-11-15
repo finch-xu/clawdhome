@@ -24,17 +24,3 @@ func TestSetRouteWritesSelectedRoute(t *testing.T) {
 		}
 	}
 }
-
-func TestRouteLabelCoversEveryRoute(t *testing.T) {
-	labels := map[egress.Route]string{
-		egress.RouteClash:   "Clash",
-		egress.RouteSystem:  "系统路由",
-		egress.RouteBlocked: "断开公网",
-		egress.Route("???"): "未知",
-	}
-	for route, want := range labels {
-		if got := routeLabel(route); got != want {
-			t.Fatalf("RouteLabel(%q) = %q, want %q", route, got, want)
-		}
-	}
-}

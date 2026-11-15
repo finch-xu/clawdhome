@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/finch-xu/clawdhome/vm"
 )
 
 func TestLookupFallsBackToEnglishWhenKeyMissingInLocale(t *testing.T) {
@@ -89,7 +91,7 @@ func TestDynamicallyLookedUpKeysExist(t *testing.T) {
 		// appearanceRow 的三个外观选项
 		"settings.followSystem", "settings.light", "settings.dark",
 		// statusSummary 和状态详情按状态码拼出来的 key
-		"vm.running", "vm.stopped", "vm.starting", "vm.stopping.state", "vm.unknown",
+		"vmState.running", "vmState.stopped", "vmState.starting", "vmState.stopping", "vmState.unknown",
 		"proxy.waiting-check", "proxy.unconfigured", "proxy.connecting",
 		"proxy.connected", "proxy.failed", "proxy.disabled", "proxy.unknown",
 		"probe.waiting", "probe.reachable", "probe.unreachable", "probe.expired", "probe.skipped",
@@ -98,6 +100,12 @@ func TestDynamicallyLookedUpKeysExist(t *testing.T) {
 		"ssh.checking", "ssh.available", "ssh.unavailable", "ssh.not-running", "ssh.unknown",
 		// routeLabel 的路由名
 		"route.system", "route.blocked", "route.unknown",
+		// proxyDetail/firewallDetail/probeDetail 按 detail 码拼出来的 key
+		"proxyDetail.saved-port", "proxyDetail.current-addr", "proxyDetail.port-cleared",
+		"proxyDetail.port-pending", "proxyDetail.egress-route",
+		"firewallDetail.no-gateway", "firewallDetail.stale", "firewallDetail.blocked",
+		"firewallDetail.proxy-only", "firewallDetail.system-route", "firewallDetail.lease-expiry",
+		"probeDetail.lastProbe",
 	}
 	for _, key := range keys {
 		for _, loc := range []locale{localeEN, localeZhHans} {
@@ -105,5 +113,38 @@ func TestDynamicallyLookedUpKeysExist(t *testing.T) {
 				t.Errorf("key %q missing from the %q dictionary (tr returned the key itself)", key, loc)
 			}
 		}
+	}
+}
+
+func TestStatusSummaryShowsStateLabelNotProgressMessage(t *testing.T) {
+	a := &app{locale: localeEN}
+	got := a.statusSummary(vm.StatusView{
+		VM: vm.VMStopping, Proxy: vm.ProxyConnected,
+		Probe: vm.ProbeReachable, Firewall: vm.FirewallProxyOnly,
+	})
+	// 状态条显示状态标签（"Stopping"），不是「停止 VM」那条进度消息。
+	if strings.Contains(got, "Stopping VM") {
+		t.Fatalf("statusSummary = %q; it picked up the progress message instead of the state label", got)
+	}
+	if !strings.Contains(got, "Stopping") {
+		t.Fatalf("statusSummary = %q, want it to name the stopping state", got)
+	}
+}
+
+func TestLocalePrefTagRejectsAnythingNotSupported(t *testing.T) {
+	// mygo.App.SetLocale panic 在无法识别的标签上，所以保存过的偏好必须先过一道
+	// 校验：手改或损坏的 launcher.json 不能让应用启动时崩溃。
+	for _, bad := range []string{"chinese", "english", "zz", "!!", "zh_CN", " "} {
+		if got := localePrefTag(bad); got != "" {
+			t.Fatalf("localePrefTag(%q) = %q, want %q so SetLocale is skipped", bad, got, "")
+		}
+	}
+	for _, good := range []string{string(localeEN), string(localeZhHans)} {
+		if got := localePrefTag(good); got != good {
+			t.Fatalf("localePrefTag(%q) = %q, want it passed through", good, got)
+		}
+	}
+	if got := localePrefTag(""); got != "" {
+		t.Fatalf("localePrefTag(\"\") = %q, want empty (follow system)", got)
 	}
 }

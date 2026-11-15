@@ -22,9 +22,9 @@ func (a *app) statusBar(c *ui.Context) {
 		ui.Column(c.Key("details")).Gap(2).Children(func() {
 			for _, line := range []struct{ label, text string }{
 				{"VM", tr("status.localSSH", a.locale) + tr("ssh."+status.SSH, a.locale)},
-				{"Clash", status.ProxyDetail},
-				{"Google", status.ProbeDetail},
-				{tr("status.firewall", a.locale), status.FirewallDetail},
+				{"Clash", a.proxyDetail(status)},
+				{"Google", a.probeDetail(status)},
+				{tr("status.firewall", a.locale), a.firewallDetail(status)},
 			} {
 				if line.text != "" {
 					ui.Text(c.Key(line.label), line.label+"  "+line.text).SingleLine().Ellipsis("…")
@@ -84,7 +84,7 @@ func (a *app) settingsView(c *ui.Context) {
 		ui.Row(c.Key("actions")).Gap(6).Children(func() {
 			ui.Text(c, a.settingsMessage).Grow(1).SingleLine().Ellipsis("…")
 			if ui.Button(c, tr("settings.cancel", a.locale)).Clicked() {
-				a.settingsOpen = false
+				a.cancelSettings()
 			}
 			if ui.PrimaryButton(c, tr("settings.save", a.locale)).Disabled(a.busy || a.draft == a.cfg).Clicked() {
 				a.saveSettings()
@@ -109,7 +109,7 @@ func (a *app) appearanceRow(c *ui.Context) {
 			if ui.Button(c.Key("theme-"+choice.pref), tr(choice.key, a.locale)).
 				Disabled(selected).Clicked() {
 				a.draft.ThemePref = choice.pref
-				mygo.Theme.SetSource(toThemeSource(choice.pref))
+				a.appearance.SetTheme(choice.pref)
 			}
 		}
 	})
@@ -130,12 +130,7 @@ func (a *app) languageRow(c *ui.Context) {
 			if ui.Button(c.Key("locale-"+choice.pref), choice.label).
 				Disabled(selected).Clicked() {
 				a.draft.LocalePref = choice.pref
-				if choice.pref == "" {
-					a.locale = toLocale(mygo.App.Locale())
-				} else {
-					mygo.App.SetLocale(choice.pref)
-					a.locale = toLocale(choice.pref)
-				}
+				a.applyLocalePref(choice.pref)
 			}
 		}
 	})
@@ -172,4 +167,28 @@ func (a *app) testPort() {
 			}
 		})
 	}()
+}
+
+// applyLocalePref 立刻套用语言偏好。空串清掉 MyGo 存的覆盖，回到系统语言。
+func (a *app) applyLocalePref(pref string) {
+	tag := localePrefTag(pref)
+	a.appearance.SetLocale(tag)
+	if tag == "" {
+		a.locale = toLocale(a.appearance.SystemLocale())
+		return
+	}
+	a.locale = toLocale(tag)
+}
+
+// cancelSettings 关掉设置面板，并把点一下就生效的外观和语言退回已保存的值，
+// 否则取消之后界面会和 launcher.json 不一致。
+func (a *app) cancelSettings() {
+	a.settingsOpen = false
+	if a.draft.ThemePref != a.cfg.ThemePref {
+		a.appearance.SetTheme(a.cfg.ThemePref)
+	}
+	if a.draft.LocalePref != a.cfg.LocalePref {
+		a.applyLocalePref(a.cfg.LocalePref)
+	}
+	a.draft = a.cfg
 }

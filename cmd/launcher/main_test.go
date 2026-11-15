@@ -15,6 +15,22 @@ type syncUpdater struct{}
 
 func (syncUpdater) Update(fn func()) { fn() }
 
+// stubAppearance 记录被套用的偏好，不碰 MyGo 的全局 API（那些调用在没有事件
+// 循环的测试进程里会死锁）。
+type stubAppearance struct {
+	theme, locale string
+	system        string
+}
+
+func (s *stubAppearance) SetTheme(source string) { s.theme = source }
+func (s *stubAppearance) SetLocale(tag string)   { s.locale = tag }
+func (s *stubAppearance) SystemLocale() string {
+	if s.system == "" {
+		return "en"
+	}
+	return s.system
+}
+
 func TestPollSkipsWhenBusy(t *testing.T) {
 	a := &app{window: syncUpdater{}, busy: true, lastPoll: time.Now().Add(-10 * time.Second)}
 	a.poll()
