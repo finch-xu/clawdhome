@@ -81,7 +81,7 @@ type app struct {
 	locale           locale
 	cfg              vm.Settings
 	command          string
-	message          string
+	message          notice
 	state            string
 	sessions         []vm.Session
 	terms            map[string]*terminal.Terminal
@@ -94,15 +94,16 @@ type app struct {
 	snapshotRevision uint64
 	lastPoll         time.Time
 	settingsOpen     bool
+	settingsRevision uint64
 	detailsOpen      bool
 	draft            vm.Settings
-	settingsMessage  string
-	portTestMessage  string
+	settingsMessage  notice
+	portTestMessage  notice
 	portTesting      bool
 	networkOpen      bool
 	networkBusy      bool
 	networkText      string
-	networkMessage   string
+	networkMessage   notice
 	preferredRoute   egress.Route
 }
 
@@ -145,13 +146,7 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		a.locale = toLocale(mygo.App.Locale())
-		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
-			{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu},
-			{Label: tr("menu.sessions", a.locale), Submenu: []*mygo.MenuItem{
-				{Label: tr("menu.startClaude", a.locale), Accelerator: "CmdOrCtrl+Shift+C", Click: a.launchFromMenu(claudeCommand)},
-				{Label: tr("menu.openTerminal", a.locale), Accelerator: "CmdOrCtrl+Shift+T", Click: a.launchFromMenu(terminalCommand)},
-			}},
-		}))
+		a.refreshNativeLanguage()
 		a.realWindow = mygo.NewWindow(mygo.WindowOptions{
 			Title: tr("app.title", a.locale), Width: 920, Height: 620, Content: ui.View(a.view),
 		})
@@ -159,7 +154,7 @@ func main() {
 		// 这两个回调要在窗口建好、a.window 赋值之后才注册：它们的唯一作用是
 		// 驱动重绘，而在窗口存在之前触发会对 nil 的 a.window 调 Update。
 		mygo.App.OnLocaleChanged(func(tag string) {
-			a.window.Update(func() { a.locale = toLocale(tag) })
+			a.window.Update(func() { a.setLocale(toLocale(tag)) })
 		})
 		mygo.Theme.OnUpdated(func() {
 			a.window.Update(func() {}) // 空回调触发重绘，让 view 用新主题取色
@@ -173,6 +168,28 @@ func main() {
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func (a *app) setLocale(loc locale) {
+	if a.locale != loc {
+		a.locale = loc
+		if a.realWindow != nil && !a.realWindow.IsDestroyed() {
+			a.refreshNativeLanguage()
+		}
+	}
+}
+
+func (a *app) refreshNativeLanguage() {
+	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
+		{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu},
+		{Label: tr("menu.sessions", a.locale), Submenu: []*mygo.MenuItem{
+			{Label: tr("menu.startClaude", a.locale), Accelerator: "CmdOrCtrl+Shift+C", Click: a.launchFromMenu(claudeCommand)},
+			{Label: tr("menu.openTerminal", a.locale), Accelerator: "CmdOrCtrl+Shift+T", Click: a.launchFromMenu(terminalCommand)},
+		}},
+	}))
+	if a.realWindow != nil {
+		a.realWindow.SetTitle(tr("app.title", a.locale))
 	}
 }
 
@@ -230,9 +247,11 @@ func (a *app) view(c *ui.Context) {
 			}
 			ui.Text(c, project).Grow(1).SingleLine().Ellipsis("…")
 			if ui.Button(c, tr("settings.title", a.locale)).Disabled(a.busy).Clicked() {
-				a.settingsOpen = !a.settingsOpen
 				if a.settingsOpen {
-					a.draft, a.settingsMessage, a.portTestMessage = a.cfg, "", ""
+					a.cancelSettings()
+				} else {
+					a.settingsOpen = true
+					a.draft, a.settingsMessage, a.portTestMessage = a.cfg, notice{}, notice{}
 				}
 			}
 		})
@@ -259,8 +278,8 @@ func (a *app) view(c *ui.Context) {
 				a.stop()
 			}
 		})
-		if a.message != "" {
-			ui.Text(c, a.message).SingleLine().Ellipsis("…")
+		if a.message.key != "" {
+			a.noticeView(c.Key("operation-message"), a.message)
 		}
 		ui.Row(c.Key("sessions")).Gap(5).Children(func() {
 			for _, s := range a.sessions {
@@ -297,20 +316,23 @@ func (a *app) showDesktop() {
 		ctx, cancel := context.WithTimeout(context.Background(), showDesktopTimeout)
 		defer cancel()
 		if err := launcher.ShowDesktop(ctx); err != nil {
-			a.window.Update(func() { a.message = err.Error() })
+			a.window.Update(func() { a.message = errorNotice("error.desktop", err) })
 		}
 	}()
 }
 
 func (a *app) chooseDirectory() {
-	workspace, message := a.launcher.Workspace(), tr("dialog.chooseProject", a.locale)
+	workspace, message, revision := a.launcher.Workspace(), tr("dialog.chooseProject", a.locale), a.settingsRevision
 	go func() {
 		dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.realWindow, Directory: true,
 			DefaultPath: workspace, Message: message})
 		a.window.Update(func() {
+			if !a.settingsOpen || revision != a.settingsRevision {
+				return
+			}
 			if err != nil {
-				a.settingsMessage = err.Error()
-			} else if a.settingsOpen && len(dirs) > 0 {
+				a.settingsMessage = errorNotice("error.choose-directory", err)
+			} else if len(dirs) > 0 {
 				a.draft.Project = dirs[0]
 			}
 		})
@@ -379,7 +401,7 @@ func (a *app) run(command string) {
 	}
 	cfg := a.cfg
 	a.vmRevision++
-	a.busy, a.message = true, tr("session.starting", a.locale)
+	a.busy, a.message = true, notice{key: "session.starting"}
 	previous := a.state
 	if a.state != "running" {
 		a.state = "starting"
@@ -424,7 +446,7 @@ func (a *app) attach(id string) {
 			},
 		})
 		if err != nil {
-			a.message = err.Error()
+			a.message = errorNotice("error.attach", err)
 			return
 		}
 		a.terms[id] = term
@@ -442,7 +464,7 @@ func (a *app) terminalExited(id string, term *terminal.Terminal, code int) {
 	if a.selected == id {
 		a.selected = ""
 		if code != 0 {
-			a.message = tr("session.reattach", a.locale)
+			a.message = notice{key: "session.reattach"}
 		}
 	}
 	a.poll()
@@ -450,7 +472,7 @@ func (a *app) terminalExited(id string, term *terminal.Terminal, code int) {
 
 func (a *app) stop() {
 	a.vmRevision++
-	a.busy, a.message = true, tr("vm.stopping", a.locale)
+	a.busy, a.message = true, notice{key: "vm.stopping"}
 	a.state = "stopping"
 	launcher := a.launcher
 	go func() {
@@ -484,10 +506,7 @@ func (a *app) kill() {
 }
 
 func (a *app) finish(err error) {
-	a.busy, a.message = false, ""
-	if err != nil {
-		a.message = err.Error()
-	}
+	a.busy, a.message = false, errorNotice("error.operation", err)
 }
 
 // sessionLabel 组合会话按钮的文案：命令名、短 ID，以及运行时长或退出码。

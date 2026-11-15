@@ -20,14 +20,17 @@ func (a *app) statusBar(c *ui.Context) {
 	status := vm.DescribeStatus(a.state, a.ssh, a.cfg, a.network, time.Now())
 	if a.detailsOpen {
 		ui.Column(c.Key("details")).Gap(2).Children(func() {
-			for _, line := range []struct{ label, text string }{
-				{"VM", tr("status.localSSH", a.locale) + tr("ssh."+status.SSH, a.locale)},
-				{"Clash", a.proxyDetail(status)},
-				{"Google", a.probeDetail(status)},
-				{tr("status.firewall", a.locale), a.firewallDetail(status)},
+			for _, line := range []struct{ label, text, detail string }{
+				{"VM", tr("status.localSSH", a.locale) + tr("ssh."+status.SSH, a.locale), ""},
+				{"Clash", a.proxyDetail(status), status.ProxyError},
+				{"Google", a.probeDetail(status), status.ProbeReason},
+				{tr("status.firewall", a.locale), a.firewallDetail(status), ""},
 			} {
 				if line.text != "" {
-					ui.Text(c.Key(line.label), line.label+"  "+line.text).SingleLine().Ellipsis("…")
+					item := ui.Text(c.Key(line.label), line.label+"  "+line.text).SingleLine().Ellipsis("…")
+					if line.detail != "" {
+						item.Tooltip(line.detail)
+					}
 				}
 			}
 		})
@@ -73,7 +76,7 @@ func (a *app) settingsView(c *ui.Context) {
 			if ui.Button(c, tr("settings.testPort", a.locale)).Disabled(a.busy || a.portTesting).Clicked() {
 				a.testPort()
 			}
-			ui.Text(c, a.portTestMessage).Grow(1).SingleLine().Ellipsis("…")
+			a.noticeView(c.Key("port-message"), a.portTestMessage).Grow(1)
 		})
 		a.appearanceRow(c.Key("appearance"))
 		a.languageRow(c.Key("language"))
@@ -82,7 +85,7 @@ func (a *app) settingsView(c *ui.Context) {
 		ui.Text(c, fmt.Sprintf(tr("settings.probePolicy", a.locale),
 			int(egress.ProbeInterval.Seconds()), int(egress.ProbeTimeout.Seconds()), egress.RecoveryProbes))
 		ui.Row(c.Key("actions")).Gap(6).Children(func() {
-			ui.Text(c, a.settingsMessage).Grow(1).SingleLine().Ellipsis("…")
+			a.noticeView(c.Key("settings-message"), a.settingsMessage).Grow(1)
 			if ui.Button(c, tr("settings.cancel", a.locale)).Clicked() {
 				a.cancelSettings()
 			}
@@ -140,30 +143,34 @@ func (a *app) saveSettings() {
 	cfg := a.draft
 	cfg.Port = strings.TrimSpace(cfg.Port)
 	if err := a.launcher.SaveSettings(cfg); err != nil {
-		a.settingsMessage = err.Error()
+		a.settingsMessage = errorNotice("error.save-settings", err)
 		return
 	}
 	a.cfg, a.draft = cfg, cfg
-	a.settingsMessage = tr("settings.saved", a.locale)
+	a.settingsMessage = notice{key: "settings.saved"}
 }
 
 func (a *app) testPort() {
 	port := strings.TrimSpace(a.draft.Port)
 	if !vm.ValidPort(port) {
-		a.portTestMessage = tr("settings.portRange", a.locale)
+		a.portTestMessage = notice{key: "settings.portRange"}
 		return
 	}
-	a.portTesting, a.portTestMessage = true, tr("settings.portTesting", a.locale)+port+"…"
+	a.portTesting, a.portTestMessage = true, notice{key: "settings.portTesting", args: []any{port}}
+	revision := a.settingsRevision
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), egress.ProbeTimeout)
 		defer cancel()
 		err := egress.CheckSOCKS5(ctx, net.JoinHostPort("127.0.0.1", port))
 		a.window.Update(func() {
+			if revision != a.settingsRevision {
+				return
+			}
 			a.portTesting = false
 			if err != nil {
-				a.portTestMessage = port + tr("settings.portFailed", a.locale) + err.Error()
+				a.portTestMessage = notice{key: "settings.portFailed", args: []any{port}, detail: err.Error()}
 			} else {
-				a.portTestMessage = port + tr("settings.portOK", a.locale)
+				a.portTestMessage = notice{key: "settings.portOK", args: []any{port}}
 			}
 		})
 	}()
@@ -174,16 +181,19 @@ func (a *app) applyLocalePref(pref string) {
 	tag := localePrefTag(pref)
 	a.appearance.SetLocale(tag)
 	if tag == "" {
-		a.locale = toLocale(a.appearance.SystemLocale())
+		a.setLocale(toLocale(a.appearance.SystemLocale()))
 		return
 	}
-	a.locale = toLocale(tag)
+	a.setLocale(toLocale(tag))
 }
 
 // cancelSettings 关掉设置面板，并把点一下就生效的外观和语言退回已保存的值，
 // 否则取消之后界面会和 launcher.json 不一致。
 func (a *app) cancelSettings() {
 	a.settingsOpen = false
+	a.settingsRevision++
+	a.portTesting = false
+	a.settingsMessage, a.portTestMessage = notice{}, notice{}
 	if a.draft.ThemePref != a.cfg.ThemePref {
 		a.appearance.SetTheme(a.cfg.ThemePref)
 	}

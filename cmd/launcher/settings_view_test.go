@@ -15,8 +15,8 @@ func TestSaveSettingsTrimsPortBeforePersisting(t *testing.T) {
 	if a.cfg.Port != "7890" {
 		t.Fatalf("persisted port = %q, want the trimmed %q", a.cfg.Port, "7890")
 	}
-	if want := tr("settings.saved", a.locale); a.settingsMessage != want {
-		t.Fatalf("settingsMessage = %q, want %q from the dictionary", a.settingsMessage, want)
+	if want := tr("settings.saved", a.locale); a.settingsMessage.text(a.locale) != want {
+		t.Fatalf("settingsMessage = %q, want %q from the dictionary", a.settingsMessage.text(a.locale), want)
 	}
 	if got := l.Settings().Port; got != "7890" {
 		t.Fatalf("port read back from disk = %q, want %q", got, "7890")
@@ -29,8 +29,8 @@ func TestSaveSettingsReportsRejectedPort(t *testing.T) {
 
 	a.saveSettings()
 
-	if a.settingsMessage == "" || a.settingsMessage == tr("settings.saved", a.locale) {
-		t.Fatalf("settingsMessage = %q, want an error for an out-of-range port", a.settingsMessage)
+	if a.settingsMessage.text(a.locale) == "" || a.settingsMessage.text(a.locale) == tr("settings.saved", a.locale) {
+		t.Fatalf("settingsMessage = %q, want an error for an out-of-range port", a.settingsMessage.text(a.locale))
 	}
 	if a.cfg.Port != "" {
 		t.Fatalf("cfg.Port = %q, want it left untouched after a rejected save", a.cfg.Port)
@@ -43,8 +43,8 @@ func TestTestPortRejectsInvalidPortWithoutHandshake(t *testing.T) {
 
 		a.testPort()
 
-		if want := tr("settings.portRange", a.locale); a.portTestMessage != want {
-			t.Fatalf("port %q: message = %q, want %q from the dictionary", port, a.portTestMessage, want)
+		if want := tr("settings.portRange", a.locale); a.portTestMessage.text(a.locale) != want {
+			t.Fatalf("port %q: message = %q, want %q from the dictionary", port, a.portTestMessage.text(a.locale), want)
 		}
 		if a.portTesting {
 			t.Fatalf("port %q: portTesting = true, want no handshake for an invalid port", port)
@@ -75,5 +75,17 @@ func TestCancelRevertsAppliedAppearanceAndLanguage(t *testing.T) {
 	}
 	if a.draft != a.cfg {
 		t.Fatalf("draft = %+v, want it reverted to cfg %+v", a.draft, a.cfg)
+	}
+}
+
+func TestRejectedSettingsMessageFollowsCurrentLanguage(t *testing.T) {
+	a := &app{launcher: vm.Launcher{Home: t.TempDir()}, draft: vm.Settings{Port: "65536"}, locale: localeEN}
+	a.saveSettings()
+	if got := a.settingsMessage.text(a.locale); got != tr("settings.portRange", localeEN) {
+		t.Fatalf("English rejection = %q", got)
+	}
+	a.locale = localeZhHans
+	if got := a.settingsMessage.text(a.locale); got != tr("settings.portRange", localeZhHans) {
+		t.Fatalf("Chinese rejection = %q", got)
 	}
 }

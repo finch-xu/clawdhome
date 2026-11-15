@@ -45,6 +45,31 @@ func toLocale(tag string) locale {
 
 var messages = map[locale]map[string]string{
 	localeEN: {
+		"error.port-required":         "Set a valid Clash port before starting the VM",
+		"error.project":               "Choose a folder inside the workspace",
+		"error.share":                 "Could not prepare the shared folders",
+		"error.save-settings":         "Could not save settings",
+		"error.prepare":               "Could not prepare or start the VM",
+		"error.mounts-changed":        "Stop the VM before updating shared folders",
+		"error.desktop":               "Could not open the VM desktop",
+		"error.desktop-restart":       "Restart the VM to enable the desktop button",
+		"error.command":               "Enter a CLI command",
+		"error.create-session":        "Could not start the session",
+		"error.stop":                  "Could not stop the VM",
+		"error.kill-session":          "Could not end the session",
+		"error.route":                 "Could not change the preferred route",
+		"error.snapshot":              "Could not read the VM network snapshot",
+		"error.attach":                "Could not attach to the session. Select it to retry.",
+		"error.choose-directory":      "Could not open the folder picker",
+		"error.operation":             "The operation failed",
+		"probeReason.gateway-stopped": "The gateway stopped",
+		"probeReason.expired":         "The Google probe expired",
+		"probeReason.waiting":         "Waiting for the Google probe",
+		"probeReason.blocked":         "Internet access was manually blocked",
+		"probeReason.proxy-failed":    "Clash SOCKS5 is unavailable",
+		"probeReason.request-invalid": "The Google probe request was invalid",
+		"probeReason.https-failed":    "The Google HTTPS probe failed on this route",
+		"probeReason.http-status":     "Google HTTP %d",
 		"vmState.running":             "Running",
 		"vmState.stopped":             "Stopped",
 		"vmState.starting":            "Starting",
@@ -115,7 +140,7 @@ var messages = map[locale]map[string]string{
 		"network.testAnthropic":       "Test Anthropic",
 		"network.backToTerm":          "Back to Terminal",
 		"network.reading":             "Reading VM network state…",
-		"network.snapshotAt":          "VM network snapshot · ",
+		"network.snapshotAt":          "VM network snapshot · %s",
 		"network.currentEgress":       "Current egress ",
 		"network.nextLaunch":          "Next launch uses ",
 		"network.unknownEgress":       "Current egress unknown · restart the VM if it runs an older gateway",
@@ -132,9 +157,9 @@ var messages = map[locale]map[string]string{
 		"settings.save":               "Save Settings",
 		"settings.saved":              "Settings saved",
 		"settings.portRange":          "Enter a port between 1 and 65535",
-		"settings.portTesting":        "Testing port ",
-		"settings.portOK":             " SOCKS5 handshake succeeded",
-		"settings.portFailed":         " SOCKS5 handshake failed · ",
+		"settings.portTesting":        "Testing port %s…",
+		"settings.portOK":             "Port %s: SOCKS5 handshake succeeded",
+		"settings.portFailed":         "Port %s: SOCKS5 handshake failed",
 		"settings.vmEnv":              "VM environment  US English · US region · ",
 		"settings.probePolicy":        "Probe policy  every %ds · %ds timeout · recovers after %d successes · backs off on 429",
 		"settings.appearance":         "Appearance",
@@ -149,6 +174,31 @@ var messages = map[locale]map[string]string{
 		"status.firewall":             "Firewall",
 	},
 	localeZhHans: {
+		"error.port-required":         "请先在设置中填写有效的 Clash 端口",
+		"error.project":               "请在工作空间内选择项目目录",
+		"error.share":                 "无法准备共享目录",
+		"error.save-settings":         "无法保存设置",
+		"error.prepare":               "无法准备或启动 VM",
+		"error.mounts-changed":        "请先停止 VM，再更新共享目录",
+		"error.desktop":               "无法打开 VM 桌面",
+		"error.desktop-restart":       "请重启 VM 以启用桌面窗口按钮",
+		"error.command":               "请输入 CLI 命令",
+		"error.create-session":        "无法启动会话",
+		"error.stop":                  "无法停止 VM",
+		"error.kill-session":          "无法结束会话",
+		"error.route":                 "无法更改首选出口",
+		"error.snapshot":              "无法读取 VM 网络快照",
+		"error.attach":                "无法连接会话，选择该会话可重试",
+		"error.choose-directory":      "无法打开目录选择窗口",
+		"error.operation":             "操作失败",
+		"probeReason.gateway-stopped": "网关已停止",
+		"probeReason.expired":         "Google 探测已过期",
+		"probeReason.waiting":         "等待 Google 探测",
+		"probeReason.blocked":         "已手动断开公网",
+		"probeReason.proxy-failed":    "Clash SOCKS5 不可用",
+		"probeReason.request-invalid": "Google 探测请求无效",
+		"probeReason.https-failed":    "当前出口的 Google HTTPS 探测失败",
+		"probeReason.http-status":     "Google HTTP %d",
 		"vmState.running":             "运行中",
 		"vmState.stopped":             "已停止",
 		"vmState.starting":            "启动中",
@@ -219,7 +269,7 @@ var messages = map[locale]map[string]string{
 		"network.testAnthropic":       "测试 Anthropic",
 		"network.backToTerm":          "返回终端",
 		"network.reading":             "正在读取 VM 网络信息…",
-		"network.snapshotAt":          "VM 网络快照 · ",
+		"network.snapshotAt":          "VM 网络快照 · %s",
 		"network.currentEgress":       "当前出口 ",
 		"network.nextLaunch":          "下次启动使用 ",
 		"network.unknownEgress":       "当前出口未知 · 若 VM 正在运行旧版网关，请重启 VM",
@@ -236,9 +286,9 @@ var messages = map[locale]map[string]string{
 		"settings.save":               "保存设置",
 		"settings.saved":              "设置已保存",
 		"settings.portRange":          "请输入 1–65535 之间的端口",
-		"settings.portTesting":        "正在测试端口 ",
-		"settings.portOK":             " SOCKS5 握手成功",
-		"settings.portFailed":         " SOCKS5 握手失败 · ",
+		"settings.portTesting":        "正在测试端口 %s…",
+		"settings.portOK":             "端口 %s 的 SOCKS5 握手成功",
+		"settings.portFailed":         "端口 %s 的 SOCKS5 握手失败",
 		"settings.vmEnv":              "VM 环境  美国英语 · 美国地区 · ",
 		"settings.probePolicy":        "探测策略  通常每 %d 秒 · %d 秒超时 · 连续 %d 次成功后恢复 · 429 时退避",
 		"settings.appearance":         "外观",
@@ -317,19 +367,25 @@ func (a *app) proxyDetail(s vm.StatusView) string {
 	case vm.ProxyDetailEgressRoute:
 		text = fmt.Sprintf(tr("proxyDetail.egress-route", a.locale), a.routeLabel(egress.Route(s.EgressRoute)))
 	}
-	// 网关给出的错误原文照抄，它和 curl 的报错一样不随界面语言变化。
-	if s.ProxyError != "" {
-		if text == "" {
-			return s.ProxyError
-		}
-		return text + "  ·  " + s.ProxyError
-	}
+
 	return text
 }
 
 // probeDetail 把探测原因和最近一次探测时间拼成一句话。
 func (a *app) probeDetail(s vm.StatusView) string {
-	text := s.ProbeReason
+	text := ""
+	if s.ProbeReasonCode != "" {
+		key := "probeReason." + s.ProbeReasonCode
+		if translated := tr(key, a.locale); translated != key {
+			text = translated
+			if s.ProbeReasonCode == egress.ReasonHTTPStatus {
+				text = fmt.Sprintf(text, s.ProbeHTTPStatus)
+			}
+		}
+	}
+	if text == "" && s.ProbeReason != "" {
+		text = tr("probe."+s.Probe, a.locale)
+	}
 	if s.LastProbe.IsZero() {
 		return text
 	}

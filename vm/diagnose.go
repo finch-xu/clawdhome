@@ -39,7 +39,7 @@ func (l Launcher) NetworkSnapshot(ctx context.Context, withAnthropic bool) (stri
 	}
 	out, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, vmShellArgs(script)...))
 	if err != nil {
-		return "", fmt.Errorf("无法读取 VM 网络信息: %w", err)
+		return "", withCode(ErrSnapshot, fmt.Errorf("无法读取 VM 网络信息: %w", err))
 	}
 	return strings.TrimSpace(string(out)), nil
 }

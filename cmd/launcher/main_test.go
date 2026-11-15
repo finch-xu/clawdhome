@@ -77,7 +77,7 @@ func TestRunRollsBackStateWhenPrepareFails(t *testing.T) {
 	if a.state != "stopped" {
 		t.Fatalf("state = %q, want rollback to %q after a failed run", a.state, "stopped")
 	}
-	if a.message == "" {
+	if a.message.text(a.locale) == "" {
 		t.Fatal("expected an error message after a failed run")
 	}
 	if a.busy {
@@ -87,7 +87,7 @@ func TestRunRollsBackStateWhenPrepareFails(t *testing.T) {
 }
 
 func TestRunIsIgnoredWhileBusy(t *testing.T) {
-	a := &app{window: syncUpdater{}, busy: true, state: "running", message: "正在启动会话…"}
+	a := &app{window: syncUpdater{}, busy: true, state: "running", message: notice{key: "session.starting"}}
 
 	a.run("/bin/zsh")
 
@@ -247,8 +247,8 @@ func TestKillFailureClearsBusyAndKeepsSelection(t *testing.T) {
 	a := &app{window: q, selected: "cli-a", state: "running", launcher: fakeLauncher(t, "exit 1")}
 	a.kill()
 	q.next(t)()
-	if a.busy || a.selected != "cli-a" || a.message == "" {
-		t.Fatalf("selection=%q, busy=%v, message=%q", a.selected, a.busy, a.message)
+	if a.busy || a.selected != "cli-a" || a.message.text(a.locale) == "" {
+		t.Fatalf("selection=%q, busy=%v, message=%q", a.selected, a.busy, a.message.text(a.locale))
 	}
 	q.next(t)()
 }
@@ -257,7 +257,7 @@ func TestOldTerminalExitDoesNotClearNewAttachment(t *testing.T) {
 	old, current := new(terminal.Terminal), new(terminal.Terminal)
 	a := &app{selected: "cli-a", terms: map[string]*terminal.Terminal{"cli-a": current}}
 	a.terminalExited("cli-a", old, 1)
-	if a.selected != "cli-a" || a.terms["cli-a"] != current || a.message != "" {
+	if a.selected != "cli-a" || a.terms["cli-a"] != current || a.message.text(a.locale) != "" {
 		t.Fatal("an old terminal's exit changed the new attachment")
 	}
 }

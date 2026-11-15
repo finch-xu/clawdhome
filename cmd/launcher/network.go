@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -48,8 +47,8 @@ func (a *app) networkPanel(c *ui.Context) {
 		})
 		ui.Text(c, a.egressSummary())
 		a.connectionTable(c.Key("connection"))
-		if a.networkMessage != "" {
-			ui.Text(c, a.networkMessage)
+		if a.networkMessage.key != "" {
+			a.noticeView(c.Key("network-message"), a.networkMessage)
 		}
 		if a.state == "running" && a.networkText != "" {
 			ui.Text(c, tr("network.snapshotTitle", a.locale))
@@ -101,26 +100,26 @@ func detailSuffix(detail string) string {
 
 func (a *app) setRoute(route egress.Route) {
 	if err := a.launcher.SetRoute(route); err != nil {
-		a.networkMessage = err.Error()
+		a.networkMessage = errorNotice("error.route", err)
 		return
 	}
 	a.preferredRoute = route
-	a.networkMessage = ""
+	a.networkMessage = notice{}
 	a.poll()
 }
 
 func (a *app) clearNetworkSnapshot() {
 	a.snapshotRevision++
 	a.networkBusy = false
-	a.networkText, a.networkMessage = "", ""
+	a.networkText, a.networkMessage = "", notice{}
 }
 
 func (a *app) refreshNetwork(anthropic bool) {
 	if a.state != "running" || a.networkBusy {
 		return
 	}
-	a.networkBusy, a.networkMessage = true, tr("network.reading", a.locale)
-	launcher, loc, revision := a.launcher, a.locale, a.snapshotRevision
+	a.networkBusy, a.networkMessage = true, notice{key: "network.reading"}
+	launcher, revision := a.launcher, a.snapshotRevision
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), networkRefreshTimeout)
 		defer cancel()
@@ -131,11 +130,11 @@ func (a *app) refreshNetwork(anthropic bool) {
 			}
 			a.networkBusy = false
 			if err != nil {
-				a.networkMessage = fmt.Sprintf(tr("network.readFailed", loc), err)
+				a.networkMessage = errorNotice("error.snapshot", err)
 				return
 			}
 			a.networkText = snapshot
-			a.networkMessage = tr("network.snapshotAt", loc) + time.Now().Format("15:04:05")
+			a.networkMessage = notice{key: "network.snapshotAt", args: []any{time.Now().Format("15:04:05")}}
 		})
 	}()
 }

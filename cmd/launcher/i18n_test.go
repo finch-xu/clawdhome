@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	egress "github.com/finch-xu/clawdhome/lima-egress"
 	"github.com/finch-xu/clawdhome/vm"
 )
 
@@ -146,5 +148,28 @@ func TestLocalePrefTagRejectsAnythingNotSupported(t *testing.T) {
 	}
 	if got := localePrefTag(""); got != "" {
 		t.Fatalf("localePrefTag(\"\") = %q, want empty (follow system)", got)
+	}
+}
+
+func TestProbeReasonUsesCodesAndSupportsLegacySnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{`{"running":true,"route":"system","probe":"unreachable","reason":"当前出口探测失败"}`, "Unreachable"},
+		{`{"running":true,"route":"system","probe":"unreachable","reason":"Google HTTP 503","reasonCode":"http-status","probeHTTPStatus":503}`, "Google HTTP 503"},
+		{`{"running":true,"route":"blocked","probe":"skipped","reason":"已断开","reasonCode":"blocked"}`, "Internet access was manually blocked"},
+	} {
+		var snapshot egress.GatewayStatus
+		if err := json.Unmarshal([]byte(tc.raw), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		snapshot.UpdatedAt = now
+		status := vm.DescribeStatus("running", vm.SSHAvailable, vm.Settings{}, &snapshot, now)
+		a := &app{locale: localeEN}
+		if got := a.probeDetail(status); got != tc.want || status.ProbeReason != snapshot.Reason {
+			t.Fatalf("translated reason %q, technical reason %q, wanted %q and %q", got, status.ProbeReason, tc.want, snapshot.Reason)
+		}
 	}
 }

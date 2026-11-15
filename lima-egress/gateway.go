@@ -116,7 +116,7 @@ func (g *Gateway) Run(ctx context.Context) {
 	}
 	defer func() {
 		g.gate.probeResult(false)
-		state.Running, state.Reason = false, "网关已停止"
+		state.Running, state.Reason, state.ReasonCode, state.ProbeHTTPStatus = false, "网关已停止", ReasonStopped, 0
 		g.publish(state)
 	}()
 	checkLease := time.NewTicker(250 * time.Millisecond)
@@ -151,7 +151,7 @@ func (g *Gateway) Run(ctx context.Context) {
 				continue
 			}
 			if g.gate.expire(time.Now().Round(0)) {
-				state.Probe, state.Reason = ProbeExpired, "Google 探测已过期"
+				state.Probe, state.Reason, state.ReasonCode, state.ProbeHTTPStatus = ProbeExpired, "Google 探测已过期", ReasonExpired, 0
 				g.publish(state)
 			}
 		case <-timer.C:
@@ -169,11 +169,12 @@ func (g *Gateway) Run(ctx context.Context) {
 			// A probe that straddled host sleep cannot reopen the gate.
 			if time.Since(outcome.started.Round(0)) > ProbeTimeout+time.Second {
 				outcome.ok = false
-				outcome.probe, outcome.reason = ProbeExpired, "Google 探测已过期"
+				outcome.probe, outcome.reason, outcome.reasonCode, outcome.httpStatus = ProbeExpired, "Google 探测已过期", ReasonExpired, 0
 			}
 			g.gate.probeResult(outcome.ok)
 			state.Proxy, state.ProxyError = outcome.proxy, outcome.proxyError
 			state.Probe, state.Reason = outcome.probe, outcome.reason
+			state.ReasonCode, state.ProbeHTTPStatus = outcome.reasonCode, outcome.httpStatus
 			if !outcome.lastProbe.IsZero() {
 				state.LastProbe = outcome.lastProbe
 			}
@@ -199,7 +200,7 @@ func (g *Gateway) launchProbe(ctx context.Context, route Route, generation uint6
 
 func (g *Gateway) applyRoute(route Route) GatewayStatus {
 	state := GatewayStatus{PID: os.Getpid(), Running: true, Route: route, ProxyAddr: g.proxyAddr,
-		Proxy: ProxyDisabled, Probe: ProbeWaiting, Reason: "等待 Google 探测"}
+		Proxy: ProxyDisabled, Probe: ProbeWaiting, Reason: "等待 Google 探测", ReasonCode: ReasonWaiting}
 	switch route {
 	case RouteClash:
 		state.Proxy = ProxyWaiting
@@ -208,7 +209,7 @@ func (g *Gateway) applyRoute(route Route) GatewayStatus {
 		g.gate.setDial(g.systemDial)
 	default:
 		g.gate.setDial(nil)
-		state.Probe, state.Reason = ProbeSkipped, "已手动断开公网"
+		state.Probe, state.Reason, state.ReasonCode = ProbeSkipped, "已手动断开公网", ReasonBlocked
 	}
 	g.publish(state)
 	return state
@@ -223,6 +224,8 @@ type probeOutcome struct {
 	proxyError string
 	probe      string
 	reason     string
+	reasonCode string
+	httpStatus int
 	delay      time.Duration
 }
 
@@ -244,20 +247,20 @@ func (g *Gateway) check(ctx context.Context, route Route) (outcome probeOutcome)
 			if err != nil {
 				outcome.proxyError = err.Error()
 			}
-			outcome.probe, outcome.reason = ProbeSkipped, "Clash SOCKS5 不可用"
+			outcome.probe, outcome.reason, outcome.reasonCode = ProbeSkipped, "Clash SOCKS5 不可用", ReasonProxyFailed
 			return outcome
 		}
 		client, outcome.proxy = g.probe, ProxyConnected
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
-		outcome.reason = "Google 探测请求无效"
+		outcome.reason, outcome.reasonCode = "Google 探测请求无效", ReasonRequest
 		return outcome
 	}
 	resp, err := client.Do(req)
 	outcome.lastProbe = time.Now()
 	if err != nil {
-		outcome.reason = "当前出口的 Google HTTPS 探测失败"
+		outcome.reason, outcome.reasonCode = "当前出口的 Google HTTPS 探测失败", ReasonHTTPSFailed
 		return outcome
 	}
 	_ = resp.Body.Close()
@@ -266,6 +269,7 @@ func (g *Gateway) check(ctx context.Context, route Route) (outcome probeOutcome)
 		outcome.probe = ProbeReachable
 	}
 	outcome.reason = "Google HTTP " + strconv.Itoa(resp.StatusCode)
+	outcome.reasonCode, outcome.httpStatus = ReasonHTTPStatus, resp.StatusCode
 	if resp.StatusCode == http.StatusTooManyRequests {
 		outcome.delay = time.Minute
 	}

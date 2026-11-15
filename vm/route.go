@@ -9,7 +9,8 @@ import (
 )
 
 // SetRoute 原子写入首选出口路由，网关下次读取时生效。
-func (l Launcher) SetRoute(route egress.Route) error {
+func (l Launcher) SetRoute(route egress.Route) (err error) {
+	defer func() { err = withCode(ErrRoute, err) }()
 	file, err := os.CreateTemp(l.Home, ".route-*")
 	if err != nil {
 		return fmt.Errorf("无法创建出口路由临时文件: %w", err)

@@ -17,8 +17,8 @@ func TestRefreshNetworkSerializesRequestsAndClearsBusy(t *testing.T) {
 				t.Fatal("refresh should be busy until the UI applies its result")
 			}
 			q.next(t)()
-			if a.networkBusy || a.networkMessage == "" || (a.networkText == "snapshot") != (script == "echo snapshot") {
-				t.Fatalf("busy=%v, text=%q, message=%q", a.networkBusy, a.networkText, a.networkMessage)
+			if a.networkBusy || a.networkMessage.text(a.locale) == "" || (a.networkText == "snapshot") != (script == "echo snapshot") {
+				t.Fatalf("busy=%v, text=%q, message=%q", a.networkBusy, a.networkText, a.networkMessage.text(a.locale))
 			}
 		})
 	}
@@ -33,7 +33,7 @@ func TestSetRouteKeepsActualSnapshotUntilGatewayAcknowledges(t *testing.T) {
 	}
 	a.launcher.Home += "/missing"
 	a.setRoute(egress.RouteClash)
-	if a.preferredRoute != egress.RouteBlocked || a.networkMessage == "" {
-		t.Fatalf("desired=%s, message=%q", a.preferredRoute, a.networkMessage)
+	if a.preferredRoute != egress.RouteBlocked || a.networkMessage.text(a.locale) == "" {
+		t.Fatalf("desired=%s, message=%q", a.preferredRoute, a.networkMessage.text(a.locale))
 	}
 }

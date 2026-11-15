@@ -115,9 +115,10 @@ func (l Launcher) Settings() Settings {
 	return cfg
 }
 
-func (l Launcher) SaveSettings(cfg Settings) error {
+func (l Launcher) SaveSettings(cfg Settings) (err error) {
+	defer func() { err = withCode(ErrSaveSettings, err) }()
 	if cfg.Port != "" && !ValidPort(cfg.Port) {
-		return fmt.Errorf("Clash 端口须为 1–65535")
+		return withCode(ErrPortRange, fmt.Errorf("Clash 端口须为 1–65535"))
 	}
 	if cfg.Project != "" {
 		if _, err := l.ProjectInWorkspace(cfg.Project); err != nil {
@@ -177,7 +178,8 @@ func (l Launcher) InspectVM(ctx context.Context) (VMInfo, error) {
 	return parseVMInfo(string(out))
 }
 
-func (l Launcher) ShowDesktop(ctx context.Context) error {
+func (l Launcher) ShowDesktop(ctx context.Context) (err error) {
+	defer func() { err = withCode(ErrDesktop, err) }()
 	dialer := net.Dialer{}
 	transport := &http.Transport{
 		DisableKeepAlives: true,
@@ -201,7 +203,7 @@ func (l Launcher) ShowDesktop(ctx context.Context) error {
 	case http.StatusAccepted:
 		return nil
 	case http.StatusNotFound:
-		return fmt.Errorf("请停止并重新启动 VM，以启用桌面窗口按钮")
+		return withCode(ErrDesktopRestart, fmt.Errorf("请停止并重新启动 VM，以启用桌面窗口按钮"))
 	default:
 		return fmt.Errorf("无法打开 VM 桌面 (%s)", resp.Status)
 	}
@@ -227,7 +229,8 @@ func parseVMInfo(lines string) (VMInfo, error) {
 // prepare 用指针接收者：第一步的 ensureShareDirs 会把 shareRoot 解析成符号链接
 // 指向的真实路径，这次更新必须对调用者可见，因为 guestProjectPath 用 shareRoot
 // 算 VirtioFS 卷名的哈希。
-func (l *Launcher) Prepare(ctx context.Context, cfg Settings) error {
+func (l *Launcher) Prepare(ctx context.Context, cfg Settings) (err error) {
+	defer func() { err = withCode(ErrPrepare, err) }()
 	if err := l.EnsureShareDirs(); err != nil {
 		return err
 	}
@@ -241,12 +244,12 @@ func (l *Launcher) Prepare(ctx context.Context, cfg Settings) error {
 	}
 	if vm.Status == "running" {
 		if !vm.hasMounts(mounts) {
-			return fmt.Errorf("请先停止 VM，再更新共享目录")
+			return withCode(ErrMountsChanged, fmt.Errorf("请先停止 VM，再更新共享目录"))
 		}
 		return l.ensureGuestSetup(ctx)
 	}
 	if egress.ReadRoute(l.Home) == egress.RouteClash && !ValidPort(cfg.Port) {
-		return fmt.Errorf("请在设置中填写有效的 Clash 端口")
+		return withCode(ErrPortRequired, fmt.Errorf("请在设置中填写有效的 Clash 端口"))
 	}
 	if vm.Status == "" {
 		if _, err := commandOutput(l.Cmd(ctx, cfg.Port, filepath.Join(l.Root, "scripts", "create-vm.sh"), l.ShareRoot)); err != nil {
@@ -318,7 +321,7 @@ func guestProjectPath(hostPath string) string {
 
 func (l Launcher) Create(ctx context.Context, project, command string) (string, error) {
 	if strings.TrimSpace(command) == "" {
-		return "", fmt.Errorf("请输入 CLI 命令")
+		return "", withCode(ErrCommand, fmt.Errorf("请输入 CLI 命令"))
 	}
 	rel, err := l.ProjectInWorkspace(project)
 	if err != nil {
@@ -326,14 +329,14 @@ func (l Launcher) Create(ctx context.Context, project, command string) (string, 
 	}
 	var token [4]byte
 	if _, err := rand.Read(token[:]); err != nil {
-		return "", fmt.Errorf("无法生成会话 ID: %w", err)
+		return "", withCode(ErrCreateSession, fmt.Errorf("无法生成会话 ID: %w", err))
 	}
 	id := "cli-" + hex.EncodeToString(token[:])
 	// Validate the share before tmux can fall back to the guest home directory.
 	args := vmShellArgs(`cd "$HOME/workspace/$1" || { echo "项目目录未挂载" >&2; exit 1; }; shift; `+execTmux,
 		rel, "new-session", "-d", "-s", id, command)
 	if _, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, args...)); err != nil {
-		return id, fmt.Errorf("无法在 VM 中启动会话: %w", err)
+		return id, withCode(ErrCreateSession, fmt.Errorf("无法在 VM 中启动会话: %w", err))
 	}
 	return id, nil
 }
@@ -356,7 +359,7 @@ func (l Launcher) NetworkStatus(vm VMInfo) *egress.GatewayStatus {
 // Stop 停止虚拟机，guest 内运行的进程随之结束。
 func (l Launcher) Stop(ctx context.Context) error {
 	if _, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, "stop", instance)); err != nil {
-		return fmt.Errorf("停止 VM 失败: %w", err)
+		return withCode(ErrStop, fmt.Errorf("停止 VM 失败: %w", err))
 	}
 	return nil
 }
@@ -364,7 +367,7 @@ func (l Launcher) Stop(ctx context.Context) error {
 // KillSession 结束 guest 内指定的 tmux 会话。
 func (l Launcher) KillSession(ctx context.Context, id string) error {
 	if _, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, l.TmuxArgs("kill-session", "-t", "="+id)...)); err != nil {
-		return fmt.Errorf("无法结束会话 %s: %w", id, err)
+		return withCode(ErrKillSession, fmt.Errorf("无法结束会话 %s: %w", id, err))
 	}
 	return nil
 }

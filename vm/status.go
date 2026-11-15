@@ -103,6 +103,8 @@ type StatusView struct {
 	EgressRoute string
 	// ProxyError 和 ProbeReason 是网关给出的原文。
 	ProxyError, ProbeReason string
+	ProbeReasonCode         string
+	ProbeHTTPStatus         int
 	// LastProbe 是最近一次探测的时间，零值表示还没探测过。
 	LastProbe time.Time
 }
@@ -135,7 +137,9 @@ func DescribeStatus(vmState, ssh string, cfg Settings, state *egress.GatewayStat
 			s.ProxyDetail, s.PendingPort = ProxyDetailPortPending, cfg.Port
 		}
 	}
+	s.ProbeReason, s.LastProbe = state.Reason, state.LastProbe
 	if now.Sub(state.UpdatedAt) > StatusExpiry {
+		s.ProbeReasonCode = egress.ReasonExpired
 		s.Proxy, s.Probe = ProxyUnknown, ProbeExpired
 		s.FirewallDetail = FirewallDetailStale
 		return s
@@ -151,7 +155,7 @@ func DescribeStatus(vmState, ssh string, cfg Settings, state *egress.GatewayStat
 	if code, ok := probeStatusCodes[state.Probe]; ok {
 		s.Probe = code
 	}
-	s.ProbeReason, s.LastProbe = state.Reason, state.LastProbe
+	s.ProbeReasonCode, s.ProbeHTTPStatus = state.ReasonCode, state.ProbeHTTPStatus
 	s.Firewall, s.FirewallDetail = FirewallBlocked, FirewallDetailBlocked
 	if state.Online && now.Before(state.Until) {
 		s.Firewall, s.FirewallDetail = FirewallProxyOnly, FirewallDetailProxyOnly
@@ -159,7 +163,7 @@ func DescribeStatus(vmState, ssh string, cfg Settings, state *egress.GatewayStat
 			s.Firewall, s.FirewallDetail = FirewallSystemRoute, FirewallDetailSystemRoute
 		}
 	} else if !state.Until.IsZero() && !now.Before(state.Until) {
-		s.Probe = ProbeExpired
+		s.Probe, s.ProbeReasonCode, s.ProbeHTTPStatus = ProbeExpired, egress.ReasonExpired, 0
 		s.FirewallDetail = FirewallDetailLeaseExpiry
 	}
 	return s

@@ -32,7 +32,8 @@ func (l Launcher) sharedMounts() []VMMount {
 	}
 }
 
-func (l *Launcher) EnsureShareDirs() error {
+func (l *Launcher) EnsureShareDirs() (err error) {
+	defer func() { err = withCode(ErrShare, err) }()
 	if err := os.MkdirAll(l.ShareRoot, 0700); err != nil {
 		return fmt.Errorf("无法创建共享目录根路径 (%s): %w", l.ShareRoot, err)
 	}
@@ -57,7 +58,7 @@ func (l *Launcher) EnsureShareDirs() error {
 }
 
 func (l Launcher) ProjectInWorkspace(project string) (string, error) {
-	invalid := fmt.Errorf("请在工作空间内选择项目目录 (%s)", l.Workspace())
+	invalid := withCode(ErrProject, fmt.Errorf("请在工作空间内选择项目目录 (%s)", l.Workspace()))
 	if !filepath.IsAbs(project) {
 		return "", invalid
 	}
