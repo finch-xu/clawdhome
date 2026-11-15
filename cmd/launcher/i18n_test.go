@@ -81,3 +81,29 @@ func TestFormatUptimeUsesDaysBeyondADay(t *testing.T) {
 		t.Fatalf("formatUptime(72h30m, zh) = %q, want it counted in days", gotZh)
 	}
 }
+
+// 这些 key 通过变量传给 tr()，静态搜索找不到它们的使用处，容易在清理字典时被
+// 当成死 key 删掉；删掉后界面会显示 key 名本身。这个测试把它们钉住。
+func TestDynamicallyLookedUpKeysExist(t *testing.T) {
+	keys := []string{
+		// appearanceRow 的三个外观选项
+		"settings.followSystem", "settings.light", "settings.dark",
+		// statusSummary 和状态详情按状态码拼出来的 key
+		"vm.running", "vm.stopped", "vm.starting", "vm.stopping.state", "vm.unknown",
+		"proxy.waiting-check", "proxy.unconfigured", "proxy.connecting",
+		"proxy.connected", "proxy.failed", "proxy.disabled", "proxy.unknown",
+		"probe.waiting", "probe.reachable", "probe.unreachable", "probe.expired", "probe.skipped",
+		"firewall.unknown", "firewall.not-running", "firewall.blocked",
+		"firewall.proxy-only", "firewall.system-route",
+		"ssh.checking", "ssh.available", "ssh.unavailable", "ssh.not-running", "ssh.unknown",
+		// routeLabel 的路由名
+		"route.system", "route.blocked", "route.unknown",
+	}
+	for _, key := range keys {
+		for _, loc := range []locale{localeEN, localeZhHans} {
+			if got := tr(key, loc); got == key {
+				t.Errorf("key %q missing from the %q dictionary (tr returned the key itself)", key, loc)
+			}
+		}
+	}
+}
