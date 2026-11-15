@@ -37,3 +37,6 @@ docs/
 mydata/
 mydocs/
 
+
+# Local build cache: Lima binaries, VM images, toolchains (tens of GB)
+.mvp-cache/

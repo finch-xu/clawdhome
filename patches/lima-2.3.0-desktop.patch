@@ -1,0 +1,267 @@
+--- a/pkg/driver/vz/vz_driver_darwin.go
++++ b/pkg/driver/vz/vz_driver_darwin.go
+@@ -512,9 +512,13 @@
+ func (l *LimaVzDriver) RunGUI(_ context.Context) error {
+ 	if l.canRunGUI() {
+ 		title := fmt.Sprintf("Lima: %s", l.Instance.Name)
+-		return l.machine.StartGraphicApplication(1920, 1200, vz.WithWindowTitle(title))
++		return l.machine.StartGraphicApplication(1920, 1200, vz.WithWindowTitle(title), vz.WithOnDemandWindow(l.Instance.Name == "cli-mvp"))
+ 	}
+ 	return fmt.Errorf("RunGUI is not supported for the given driver '%s' and display '%s'", "vz", *l.Instance.Config.Video.Display)
++}
++
++func (l *LimaVzDriver) ShowDesktop() bool {
++	return l.canRunGUI() && vz.ShowOnDemandWindow()
+ }
+ 
+ func (l *LimaVzDriver) requestStopViaSSH(ctx context.Context) error {
+--- a/pkg/hostagent/api/server/server.go
++++ b/pkg/hostagent/api/server/server.go
+@@ -101,4 +101,11 @@
+ func AddRoutes(r *http.ServeMux, b *Backend) {
+ 	r.Handle("/v1/info", http.HandlerFunc(b.GetInfo))
+ 	r.Handle("/v1/screenshot", http.HandlerFunc(b.GetScreenshot))
++	r.HandleFunc("POST /v1/desktop", func(w http.ResponseWriter, r *http.Request) {
++		if !b.Agent.ShowDesktop() {
++			b.onError(w, errors.New("VM desktop is unavailable"), http.StatusConflict)
++			return
++		}
++		w.WriteHeader(http.StatusAccepted)
++	})
+ }
+--- a/pkg/hostagent/hostagent.go
++++ b/pkg/hostagent/hostagent.go
+@@ -568,6 +568,18 @@
+ 	// Stop the external driver gRPC server now that the instance is shutting down.
+ 	server.Stop(a.instDir, false)
+ 	return stopErr
++}
++
++func (a *HostAgent) ShowDesktop() bool {
++	if a.instName != "cli-mvp" {
++		return false
++	}
++	inner := a.driver
++	if cd, ok := a.driver.(*driver.ConfiguredDriver); ok {
++		inner = cd.Driver
++	}
++	desktop, ok := inner.(interface{ ShowDesktop() bool })
++	return ok && desktop.ShowDesktop()
+ }
+ 
+ func (a *HostAgent) Screenshot(ctx context.Context, format string) ([]byte, error) {
+--- a/vendor/github.com/Code-Hex/vz/v3/virtualization.go
++++ b/vendor/github.com/Code-Hex/vz/v3/virtualization.go
+@@ -205,7 +205,6 @@
+ 	}
+ 	return usbControllers
+ }
+-
+ 
+ //export changeStateOnObserver
+ func changeStateOnObserver(newStateRaw C.int, cgoHandleUintptr C.uintptr_t) {
+@@ -384,6 +383,7 @@
+ type startGraphicApplicationOptions struct {
+ 	title            string
+ 	enableController bool
++	onDemandWindow   bool
+ }
+ 
+ // StartGraphicApplicationOption is an option for display graphics start.
+@@ -401,10 +401,21 @@
+ func WithController(enable bool) StartGraphicApplicationOption {
+ 	return func(sgao *startGraphicApplicationOptions) error {
+ 		sgao.enableController = enable
++		return nil
++	}
++}
++
++// WithOnDemandWindow keeps the window hidden until ShowOnDemandWindow is called.
++func WithOnDemandWindow(enable bool) StartGraphicApplicationOption {
++	return func(options *startGraphicApplicationOptions) error {
++		options.onDemandWindow = enable
+ 		return nil
+ 	}
+ }
+ 
++// ShowOnDemandWindow displays the current process's managed VM window.
++func ShowOnDemandWindow() bool { return bool(C.showOnDemandVirtualMachineWindow()) }
++
+ // StartGraphicApplication starts an application to display graphics of the VM.
+ //
+ // You must to call runtime.LockOSThread before calling this method.
+@@ -429,6 +440,7 @@
+ 		C.double(height),
+ 		windowTitle.CString(),
+ 		C.bool(defaultOpts.enableController),
++		C.bool(defaultOpts.onDemandWindow),
+ 	)
+ 	return nil
+ }
+--- a/vendor/github.com/Code-Hex/vz/v3/virtualization_12.h
++++ b/vendor/github.com/Code-Hex/vz/v3/virtualization_12.h
+@@ -45,4 +45,5 @@
+ void setAudioDevicesVZVirtualMachineConfiguration(void *config,
+     void *audioDevices);
+ 
+-void startVirtualMachineWindow(void *machine, void *queue, double width, double height, const char *title, bool enableController);
+\ No newline at end of file
++void startVirtualMachineWindow(void *machine, void *queue, double width, double height, const char *title, bool enableController, bool onDemandWindow);
++bool showOnDemandVirtualMachineWindow(void);
+--- a/vendor/github.com/Code-Hex/vz/v3/virtualization_12.m
++++ b/vendor/github.com/Code-Hex/vz/v3/virtualization_12.m
+@@ -343,7 +343,7 @@
+     RAISE_UNSUPPORTED_MACOS_EXCEPTION();
+ }
+ 
+-void startVirtualMachineWindow(void *machine, void *queue, double width, double height, const char *title, bool enableController)
++void startVirtualMachineWindow(void *machine, void *queue, double width, double height, const char *title, bool enableController, bool onDemandWindow)
+ {
+     // Create a shared app instance.
+     // This will initialize the global variable
+@@ -358,7 +358,8 @@
+                            windowWidth:(CGFloat)width
+                           windowHeight:(CGFloat)height
+                            windowTitle:windowTitle
+-                      enableController:enableController] autorelease];
++                      enableController:enableController
++                        onDemandWindow:onDemandWindow] autorelease];
+ 
+             NSApp.delegate = appDelegate;
+             [NSApp run];
+@@ -367,3 +368,23 @@
+     }
+     RAISE_UNSUPPORTED_MACOS_EXCEPTION();
+ }
++
++bool showOnDemandVirtualMachineWindow(void)
++{
++    if (@available(macOS 12, *)) {
++        __block BOOL shown = NO;
++        void (^show)(void) = ^{
++            AppDelegate *delegate = (AppDelegate *)NSApp.delegate;
++            if ([delegate isKindOfClass:[AppDelegate class]]) {
++                shown = [delegate showOnDemandWindow];
++            }
++        };
++        if ([NSThread isMainThread]) {
++            show();
++        } else {
++            dispatch_sync(dispatch_get_main_queue(), show);
++        }
++        return shown;
++    }
++    return false;
++}
+--- a/vendor/github.com/Code-Hex/vz/v3/virtualization_view.h
++++ b/vendor/github.com/Code-Hex/vz/v3/virtualization_view.h
+@@ -31,5 +31,7 @@
+                            windowWidth:(CGFloat)windowWidth
+                           windowHeight:(CGFloat)windowHeight
+                            windowTitle:(NSString *)windowTitle
+-                      enableController:(BOOL)enableController;
+-@end
+\ No newline at end of file
++                      enableController:(BOOL)enableController
++                        onDemandWindow:(BOOL)onDemandWindow;
++- (BOOL)showOnDemandWindow;
++@end
+--- a/vendor/github.com/Code-Hex/vz/v3/virtualization_view.m
++++ b/vendor/github.com/Code-Hex/vz/v3/virtualization_view.m
+@@ -509,6 +509,8 @@
+     NSWindow *_window;
+     NSToolbar *_toolbar;
+     BOOL _enableController;
++    BOOL _onDemandWindow;
++    BOOL _windowReady;
+     // Overlay for pause mode.
+     NSVisualEffectView *_pauseOverlayView;
+     // Zoom function properties.
+@@ -525,6 +527,7 @@
+                           windowHeight:(CGFloat)windowHeight
+                            windowTitle:(NSString *)windowTitle
+                       enableController:(BOOL)enableController
++                        onDemandWindow:(BOOL)onDemandWindow
+ {
+     self = [super init];
+     _virtualMachine = virtualMachine;
+@@ -549,6 +552,7 @@
+         _toolbar = [self createCustomToolbar];
+     }
+     _enableController = enableController;
++    _onDemandWindow = onDemandWindow;
+     [_virtualMachine addObserver:self
+                       forKeyPath:@"state"
+                          options:NSKeyValueObservingOptionNew
+@@ -739,14 +743,49 @@
+ {
+     [self setupMenuBar];
+     [self setupGraphicWindow];
++    _windowReady = YES;
++    if (_onDemandWindow) {
++        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
++    } else {
++        [self presentGraphicsWindow];
++    }
++}
+ 
+-    // These methods are required to call here. Because the menubar will be not active even if
+-    // application is running.
+-    // See: https://stackoverflow.com/questions/62739862/why-doesnt-activateignoringotherapps-enable-the-menu-bar
++- (void)presentGraphicsWindow
++{
+     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
++    [NSApp unhide:nil];
++    if (_window.isMiniaturized) {
++        [_window deminiaturize:nil];
++    }
++    [_window makeKeyAndOrderFront:nil];
+     [NSApp activateIgnoringOtherApps:YES];
++}
++
++- (BOOL)showOnDemandWindow
++{
++    if (!_onDemandWindow || !_windowReady) {
++        return NO;
++    }
++    [self presentGraphicsWindow];
++    return YES;
++}
++
++- (BOOL)windowShouldClose:(NSWindow *)window
++{
++    if (!_onDemandWindow || window != _window) {
++        return YES;
++    }
++    [_window orderOut:nil];
++    [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
++    return NO;
+ }
+ 
++- (void)closeDesktopWindow:(id)sender
++{
++    [_window performClose:sender];
++}
++
+ - (void)windowWillClose:(NSNotification *)notification
+ {
+     [NSApp performSelectorOnMainThread:@selector(terminate:) withObject:self waitUntilDone:NO];
+@@ -846,7 +885,6 @@
+     }
+ 
+     [_window setDelegate:self];
+-    [_window makeKeyAndOrderFront:nil];
+ 
+     // This code to prevent crash when called applicationShouldTerminateAfterLast_windowClosed.
+     // https://stackoverflow.com/a/13470694
+@@ -1318,8 +1356,8 @@
+         hideOthersItem,
+         [NSMenuItem separatorItem],
+         [[[NSMenuItem alloc]
+-            initWithTitle:[@"Quit " stringByAppendingString:applicationName]
+-                   action:@selector(terminate:)
++            initWithTitle:(_onDemandWindow ? @"Close VM Desktop" : [@"Quit " stringByAppendingString:applicationName])
++                   action:(_onDemandWindow ? @selector(closeDesktopWindow:) : @selector(terminate:))
+             keyEquivalent:@"q"] autorelease],
+     ];
+     for (NSMenuItem *menuItem in menuItems) {

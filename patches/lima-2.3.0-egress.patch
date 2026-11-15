@@ -1,0 +1,288 @@
+--- a/pkg/driver/vz/vm_darwin.go
++++ b/pkg/driver/vz/vm_darwin.go
+@@ -35,6 +35,7 @@
+ 	"github.com/lima-vm/lima/v2/pkg/limayaml"
+ 	"github.com/lima-vm/lima/v2/pkg/networks"
+ 	"github.com/lima-vm/lima/v2/pkg/networks/usernet"
++	"github.com/lima-vm/lima/v2/pkg/networks/usernet/egress"
+ 	"github.com/lima-vm/lima/v2/pkg/osutil"
+ 	"github.com/lima-vm/lima/v2/pkg/store"
+ )
+@@ -259,6 +260,18 @@
+ }
+ 
+ func startUsernet(ctx context.Context, inst *limatype.Instance) (*usernet.Client, context.CancelFunc, error) {
++	var gateway *egress.Gateway
++	if inst.Name == "cli-mvp" {
++		if len(inst.Networks) != 0 || len(inst.Config.Networks) != 0 ||
++			inst.Config.HostResolver.Enabled == nil || *inst.Config.HostResolver.Enabled {
++			return nil, nil, errors.New("cli-mvp requires one user-mode NIC and a disabled Lima host resolver")
++		}
++		var err error
++		gateway, err = egress.New(os.Getenv("MVP_CLASH_SOCKS5"), filepath.Join(inst.Dir, "mvp-network.json"))
++		if err != nil {
++			return nil, nil, err
++		}
++	}
+ 	if firstUsernetIndex := limayaml.FirstUsernetIndex(inst.Config); firstUsernetIndex != -1 {
+ 		nwName := inst.Config.Networks[firstUsernetIndex].Lima
+ 		return usernet.NewClientByName(nwName), nil, nil
+@@ -275,7 +288,11 @@
+ 	os.RemoveAll(endpointSock)
+ 	os.RemoveAll(vzSock)
+ 	ctx, cancel := context.WithCancel(ctx)
+-	err = usernet.StartGVisorNetstack(ctx, gvisorNetstackOpts(inst, endpointSock, vzSock))
++	opts := gvisorNetstackOpts(inst, endpointSock, vzSock)
++	if gateway != nil {
++		opts.Gateway = gateway
++	}
++	err = usernet.StartGVisorNetstack(ctx, opts)
+ 	if err != nil {
+ 		defer cancel()
+ 		return nil, nil, err
+--- a/pkg/networks/usernet/gvproxy.go
++++ b/pkg/networks/usernet/gvproxy.go
+@@ -20,12 +20,14 @@
+ 	"github.com/containers/gvisor-tap-vsock/pkg/transport"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/types"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
++	"github.com/lima-vm/lima/v2/pkg/networks/usernet/egress"
+ 	"github.com/sirupsen/logrus"
+ 	"golang.org/x/sync/errgroup"
+ )
+ 
+ type GVisorNetstackOpts struct {
+-	MTU int
++	Gateway *egress.Gateway
++	MTU     int
+ 
+ 	QemuSocket string
+ 	FdSocket   string
+@@ -58,6 +60,9 @@
+ 	if err != nil {
+ 		return err
+ 	}
++	if opts.Gateway != nil {
++		go opts.Gateway.Run(ctx)
++	}
+ 	if opts.Async {
+ 		return err
+ 	}
+@@ -88,7 +93,7 @@
+ 	// Comparing this with QEMU SLIRP,
+ 	// - DNS is equivalent to GatewayIP
+ 	// - GatewayIP is equivalent to NAT configuration
+-	return &types.Configuration{
++	configuration := &types.Configuration{
+ 		Debug:             false,
+ 		MTU:               opts.MTU,
+ 		Subnet:            opts.Subnet,
+@@ -100,7 +105,14 @@
+ 		DNSSearchDomains:  searchDomains(),
+ 		NAT:               natTable(gatewayIP, opts.DisableHostLoopback),
+ 		GatewayVirtualIPs: []string{gatewayIP},
+-	}, nil
++	}
++	if opts.Gateway != nil {
++		configuration.DialOutboundTCP = opts.Gateway.DialTCP
++		configuration.ResolveDNS = opts.Gateway.ResolveDNS
++		configuration.DNSSearchDomains = nil
++		configuration.NAT = nil
++	}
++	return configuration, nil
+ }
+ 
+ // natTable returns the gateway's NAT table. By default the gateway IP maps to the host's loopback,
+--- a/vendor/github.com/containers/gvisor-tap-vsock/pkg/services/dns/dns.go
++++ b/vendor/github.com/containers/gvisor-tap-vsock/pkg/services/dns/dns.go
+@@ -9,6 +9,7 @@
+ 	"regexp"
+ 	"strings"
+ 	"sync"
++	"time"
+ 
+ 	"github.com/containers/gvisor-tap-vsock/pkg/apilog"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/types"
+@@ -28,9 +29,10 @@
+ var validDNSChars = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+ 
+ type dnsHandler struct {
+-	zones     []types.Zone
+-	zonesLock sync.RWMutex
+-	upstream  upstreamResolver
++	resolvePacket func(context.Context, []byte) ([]byte, error)
++	zones         []types.Zone
++	zonesLock     sync.RWMutex
++	upstream      upstreamResolver
+ 	// nameservers are the host's upstream DNS servers ("ip:port") used to
+ 	// forward raw queries for record types that Go's net.Resolver cannot
+ 	// look up directly (SOA, PTR, AAAA, CAA, ...).
+@@ -42,7 +44,16 @@
+ 	m := new(dns.Msg)
+ 	m.SetReply(r)
+ 	m.RecursionAvailable = true
+-	h.addAnswers(m)
++	if h.resolvePacket == nil {
++		h.addAnswers(m)
++	} else if len(r.Question) != 1 || !h.addLocalAnswers(m, r.Question[0]) {
++		answer := h.resolve(r)
++		if answer == nil {
++			m.Rcode = dns.RcodeServerFailure
++		} else {
++			m = answer
++		}
++	}
+ 	edns0 := r.IsEdns0()
+ 	if edns0 != nil {
+ 		responseMessageSize = int(edns0.UDPSize())
+@@ -53,6 +64,24 @@
+ 	}
+ }
+ 
++func (h *dnsHandler) resolve(r *dns.Msg) *dns.Msg {
++	query, err := r.Pack()
++	if err != nil {
++		return nil
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++	defer cancel()
++	raw, err := h.resolvePacket(ctx, query)
++	if err != nil {
++		return nil
++	}
++	answer := new(dns.Msg)
++	if err := answer.Unpack(raw); err != nil || !answer.Response || answer.Id != r.Id {
++		return nil
++	}
++	return answer
++}
++
+ func (h *dnsHandler) handleTCP(w dns.ResponseWriter, r *dns.Msg) {
+ 	h.handle(w, r, dns.MaxMsgSize)
+ }
+@@ -326,6 +355,10 @@
+ 	return &Server{udpConn: udpConn, tcpLn: tcpLn, handler: handler}, nil
+ }
+ 
++func NewWithPacketResolver(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone, resolve func(context.Context, []byte) ([]byte, error)) *Server {
++	return &Server{udpConn: udpConn, tcpLn: tcpLn, handler: &dnsHandler{zones: zones, resolvePacket: resolve}}
++}
++
+ func (s *Server) Serve() error {
+ 	mux := dns.NewServeMux()
+ 	mux.HandleFunc(".", s.handler.handleUDP)
+--- a/vendor/github.com/containers/gvisor-tap-vsock/pkg/services/forwarder/tcp.go
++++ b/vendor/github.com/containers/gvisor-tap-vsock/pkg/services/forwarder/tcp.go
+@@ -23,12 +23,16 @@
+ 	defaultTCPConnectTimeout = 30 * time.Second
+ )
+ 
+-func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool, maxInFlight int, connectTimeout time.Duration) *tcp.Forwarder {
++func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool, maxInFlight int, connectTimeout time.Duration, dialOptions ...func(context.Context, string, string) (net.Conn, error)) *tcp.Forwarder {
+ 	if maxInFlight <= 0 {
+ 		maxInFlight = defaultTCPMaxInFlight
+ 	}
+ 	if connectTimeout <= 0 {
+ 		connectTimeout = defaultTCPConnectTimeout
++	}
++	dial := (&net.Dialer{}).DialContext
++	if len(dialOptions) > 0 && dialOptions[0] != nil {
++		dial = dialOptions[0]
+ 	}
+ 	return tcp.NewForwarder(s, 0, maxInFlight, func(r *tcp.ForwarderRequest) {
+ 		localAddress := r.ID().LocalAddress
+@@ -43,7 +47,9 @@
+ 			localAddress = replaced
+ 		}
+ 		natLock.Unlock()
+-		outbound, err := net.DialTimeout("tcp", net.JoinHostPort(localAddress.String(), fmt.Sprint(r.ID().LocalPort)), connectTimeout)
++		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
++		outbound, err := dial(ctx, "tcp", net.JoinHostPort(localAddress.String(), fmt.Sprint(r.ID().LocalPort)))
++		cancel()
+ 		if err != nil {
+ 			log.Tracef("net.DialTimeout() = %v", err)
+ 			r.Complete(true)
+@@ -54,6 +60,7 @@
+ 		ep, tcpErr := r.CreateEndpoint(&wq)
+ 		r.Complete(false)
+ 		if tcpErr != nil {
++			_ = outbound.Close()
+ 			if _, ok := tcpErr.(*tcpip.ErrConnectionRefused); ok {
+ 				// transient error
+ 				log.Debugf("r.CreateEndpoint() = %v", tcpErr)
+@@ -68,7 +75,19 @@
+ 				return outbound, nil
+ 			},
+ 		}
+-		remote.HandleConn(gonet.NewTCPConn(&wq, ep))
++		guest := gonet.NewTCPConn(&wq, ep)
++		if guarded, ok := outbound.(interface{ Revoked() <-chan struct{} }); ok {
++			relayDone := make(chan struct{})
++			defer close(relayDone)
++			go func() {
++				select {
++				case <-guarded.Revoked():
++					_ = guest.Close()
++				case <-relayDone:
++				}
++			}()
++		}
++		remote.HandleConn(guest)
+ 	})
+ }
+ 
+--- a/vendor/github.com/containers/gvisor-tap-vsock/pkg/types/configuration.go
++++ b/vendor/github.com/containers/gvisor-tap-vsock/pkg/types/configuration.go
+@@ -1,11 +1,16 @@
+ package types
+ 
+ import (
++	"context"
+ 	"net"
+ 	"regexp"
+ )
+ 
+ type Configuration struct {
++	// These hooks are installed together by Lima for a controlled outbound network.
++	DialOutboundTCP func(context.Context, string, string) (net.Conn, error) `json:"-" yaml:"-"`
++	ResolveDNS      func(context.Context, []byte) ([]byte, error)           `json:"-" yaml:"-"`
++
+ 	// Print packets on stderr
+ 	Debug bool `yaml:"debug,omitempty"`
+ 
+--- a/vendor/github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork/services.go
++++ b/vendor/github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork/services.go
+@@ -26,12 +26,14 @@
+ 	translation := parseNATTable(configuration)
+ 
+ 	tcpForwarder := forwarder.TCP(s, translation, &natLock, configuration.Ec2MetadataAccess,
+-		configuration.TCPMaxInFlight, time.Duration(configuration.TCPConnectTimeout)*time.Second)
++		configuration.TCPMaxInFlight, time.Duration(configuration.TCPConnectTimeout)*time.Second, configuration.DialOutboundTCP)
+ 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
+-	udpForwarder := forwarder.UDP(s, translation, &natLock, configuration.Ec2MetadataAccess)
+-	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+-	icmpForwarder := forwarder.ICMP(s, translation, &natLock)
+-	s.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
++	if configuration.DialOutboundTCP == nil {
++		udpForwarder := forwarder.UDP(s, translation, &natLock, configuration.Ec2MetadataAccess)
++		s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
++		icmpForwarder := forwarder.ICMP(s, translation, &natLock)
++		s.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
++	}
+ 
+ 	dnsMux, err := dnsServer(configuration, s)
+ 	if err != nil {
+@@ -77,7 +79,12 @@
+ 		return nil, err
+ 	}
+ 
+-	server, err := dns.New(udpConn, tcpLn, configuration.DNS)
++	var server *dns.Server
++	if configuration.ResolveDNS == nil {
++		server, err = dns.New(udpConn, tcpLn, configuration.DNS)
++	} else {
++		server = dns.NewWithPacketResolver(udpConn, tcpLn, configuration.DNS, configuration.ResolveDNS)
++	}
+ 	if err != nil {
+ 		return nil, err
+ 	}

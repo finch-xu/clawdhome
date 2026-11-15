@@ -1,0 +1,364 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/terminal"
+	"github.com/egoist/mygo/ui"
+
+	egress "github.com/finch-xu/clawdhome/lima-egress"
+)
+
+const terminalCommand = "/bin/zsh"
+
+const claudeGuestScript = `
+if command -v claude >/dev/null 2>&1; then
+    exec claude
+fi
+if test -x "$HOME/.local/bin/claude"; then
+    exec "$HOME/.local/bin/claude"
+fi
+printf "%s\n" "Claude Code is not installed in this VM. Install claude in the VM, then try again." >&2
+exit 127
+`
+
+const claudeCommand = terminalCommand + " -lic '" + claudeGuestScript + "'"
+
+type app struct {
+	launcher        launcher
+	window          *mygo.Window
+	cfg             settings
+	command         string
+	message         string
+	state           string
+	sessions        []session
+	terms           map[string]*terminal.Terminal
+	selected        string
+	busy            bool
+	ssh             string
+	network         *egress.GatewayStatus
+	polling         bool
+	lastPoll        time.Time
+	settingsOpen    bool
+	detailsOpen     bool
+	draft           settings
+	settingsMessage string
+	portTestMessage string
+	portTesting     bool
+	networkOpen     bool
+	networkBusy     bool
+	networkText     string
+	networkMessage  string
+	preferredRoute  egress.Route
+}
+
+func main() {
+	workspace := flag.String("workspace", defaultWorkspace(), "MVP workspace")
+	flag.Parse()
+	root, err := filepath.Abs(*workspace)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if os.Getenv("MYGO_GHOSTTY_VT") == "" {
+		if err := os.Setenv("MYGO_GHOSTTY_VT", filepath.Join(root, ".mvp-cache", "mygo-native", "libghostty-vt.dylib")); err != nil {
+			log.Fatal(err)
+		}
+	}
+	home, err := os.ReadFile(filepath.Join(root, ".mvp-cache", "instance-home"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	shareRoot, err := defaultShareRoot()
+	if err != nil {
+		log.Fatal(err)
+	}
+	l := launcher{root: root, home: strings.TrimSpace(string(home)), shareRoot: shareRoot,
+		lima: filepath.Join(root, ".mvp-cache", "lima", "bin", "limactl-mvp")}
+	if err := l.ensureShareDirs(); err != nil {
+		log.Fatal(err)
+	}
+	a := &app{launcher: l, cfg: l.settings(), command: terminalCommand, state: "unknown", ssh: "等待检查", terms: make(map[string]*terminal.Terminal)}
+	a.preferredRoute = egress.ReadRoute(l.home)
+	mygo.App.WhenReady(func() {
+		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
+			{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu},
+			{Label: "会话", Submenu: []*mygo.MenuItem{
+				{Label: "启动 Claude Code", Accelerator: "CmdOrCtrl+Shift+C", Click: a.launchFromMenu(claudeCommand)},
+				{Label: "打开终端", Accelerator: "CmdOrCtrl+Shift+T", Click: a.launchFromMenu(terminalCommand)},
+			}},
+		}))
+		a.window = mygo.NewWindow(mygo.WindowOptions{
+			Title: "macOS CLI 启动器", Width: 920, Height: 620, Content: ui.View(a.view),
+		})
+		a.window.OnClosed(func() {
+			for id, term := range a.terms {
+				delete(a.terms, id)
+				_ = term.Close()
+			}
+		})
+	})
+	if err := mygo.App.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func defaultWorkspace() string {
+	if exe, err := os.Executable(); err == nil {
+		contents := filepath.Dir(filepath.Dir(exe))
+		bundle := filepath.Dir(contents)
+		if filepath.Base(contents) == "Contents" && filepath.Ext(bundle) == ".app" {
+			return filepath.Dir(filepath.Dir(bundle))
+		}
+	}
+	return "."
+}
+
+func (a *app) view(c *ui.Context) {
+	c.After(time.Second)
+	if time.Since(a.lastPoll) >= 2*time.Second {
+		a.poll()
+	}
+	ui.Column(c).Fill().Padding(12).Gap(8).Children(func() {
+		ui.Row(c.Key("project")).Gap(8).Children(func() {
+			project := a.cfg.Project
+			if project == "" {
+				project = "未选择项目"
+			}
+			ui.Text(c, project).Grow(1).SingleLine().Ellipsis("…")
+			if ui.Button(c, "设置").Disabled(a.busy).Clicked() {
+				a.settingsOpen = !a.settingsOpen
+				if a.settingsOpen {
+					a.draft, a.settingsMessage, a.portTestMessage = a.cfg, "", ""
+				}
+			}
+		})
+		a.statusBar(c.Key("status"))
+		if a.settingsOpen {
+			a.settingsView(c.Key("settings"))
+		}
+		ui.Row(c.Key("controls")).Gap(8).Children(func() {
+			ui.TextInput(c, &a.command).Grow(1).Placeholder("CLI 命令").Label("CLI 命令").Disabled(a.busy)
+			if ui.PrimaryButton(c, "运行").Disabled(a.busy).Clicked() {
+				a.run(a.command)
+			}
+			if ui.Button(c, "Claude Code").Disabled(a.busy).Clicked() {
+				a.run(claudeCommand)
+			}
+			if ui.Button(c, "终端").Disabled(a.busy).Clicked() {
+				a.run(terminalCommand)
+			}
+			if ui.Button(c, "显示 VM 桌面").Disabled(a.busy || a.state != "running").Clicked() {
+				a.showDesktop()
+			}
+			if ui.Button(c, "停止 VM").Disabled(a.busy || a.state != "running").Clicked() {
+				a.stop()
+			}
+		})
+		if a.message != "" {
+			ui.Text(c, a.message).SingleLine().Ellipsis("…")
+		}
+		ui.Row(c.Key("sessions")).Gap(5).Children(func() {
+			for _, s := range a.sessions {
+				if ui.Button(c.Key(s.ID), s.Command+" "+s.ID[4:]).Disabled(a.busy).Clicked() {
+					a.attach(s.ID)
+				}
+			}
+			if a.selected != "" && ui.Button(c, "结束会话").Disabled(a.busy).Clicked() {
+				a.kill()
+			}
+		})
+		if a.networkOpen {
+			a.networkPanel(c.Key("network-panel"))
+		} else if term := a.terms[a.selected]; term != nil {
+			ui.Box(c.Key("terminal-shell")).Grow(1).MinHeight(0).Children(func() {
+				terminal.View(c.Key(a.selected), term).Fill().AutoFocus()
+			})
+		} else {
+			ui.Box(c.Key("empty")).Grow(1).Center().Children(func() {
+				ui.Text(c, "运行一个 CLI，或选择已有会话。")
+			})
+		}
+	})
+}
+
+func (a *app) showDesktop() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := a.launcher.showDesktop(ctx); err != nil {
+			a.window.Update(func() { a.message = err.Error() })
+		}
+	}()
+}
+
+func (a *app) chooseDirectory() {
+	go func() {
+		dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.window, Directory: true,
+			DefaultPath: a.launcher.workspace(), Message: "请选择工作空间内的项目目录。"})
+		a.window.Update(func() {
+			if err != nil {
+				a.settingsMessage = err.Error()
+			} else if a.settingsOpen && len(dirs) > 0 {
+				a.draft.Project = dirs[0]
+			}
+		})
+	}()
+}
+
+func (a *app) poll() {
+	if a.busy || a.polling {
+		return
+	}
+	a.lastPoll, a.polling = time.Now(), true
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		vm, vmErr := a.launcher.inspectVM(ctx)
+		network := a.launcher.networkStatus(vm)
+		var sessions []session
+		var sessionsErr error
+		ssh := "未运行"
+		if vm.Status == "running" {
+			sessions, sessionsErr = a.launcher.list(ctx)
+			ssh = "可用"
+			if sessionsErr != nil {
+				if _, err := commandOutput(a.launcher.cmd(ctx, "", a.launcher.lima, vmShellArgs("/usr/bin/true")...)); err != nil {
+					ssh = "暂不可用"
+				}
+			}
+		}
+		a.window.Update(func() {
+			a.polling = false
+			if a.busy {
+				return
+			}
+			if vmErr != nil {
+				a.state, a.ssh, a.network = "unknown", "状态未知", nil
+				return
+			}
+			a.state, a.ssh, a.network = vm.Status, ssh, network
+			if sessionsErr == nil {
+				a.sessions = sessions
+			}
+		})
+	}()
+}
+
+func (a *app) launchFromMenu(command string) func(*mygo.MenuItem, *mygo.Window) {
+	return func(_ *mygo.MenuItem, _ *mygo.Window) {
+		if a.window != nil && !a.window.IsDestroyed() {
+			a.window.Update(func() { a.run(command) })
+		}
+	}
+}
+
+func (a *app) run(command string) {
+	if a.busy {
+		return
+	}
+	cfg := a.cfg
+	a.busy, a.message = true, "正在启动会话…"
+	previous := a.state
+	if a.state != "running" {
+		a.state = "starting"
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 26*time.Minute)
+		defer cancel()
+		err := a.launcher.prepare(ctx, cfg)
+		var id string
+		var sessions []session
+		if err == nil {
+			id, err = a.launcher.create(ctx, cfg.Project, command)
+		}
+		if err == nil {
+			sessions, _ = a.launcher.list(ctx)
+		}
+		a.window.Update(func() {
+			a.finish(err)
+			a.state = previous
+			if err == nil {
+				a.state, a.sessions, a.ssh = "running", sessions, "可用"
+				a.attach(id)
+			}
+			a.poll()
+		})
+	}()
+}
+
+func (a *app) attach(id string) {
+	if a.terms[id] == nil {
+		term, err := terminal.New(terminal.Options{
+			Command: append([]string{a.launcher.lima}, a.launcher.tmuxArgs("attach-session", "-t", "="+id)...),
+			Env:     []string{"LIMA_HOME=" + a.launcher.home},
+			OnExit: func(code int) {
+				a.window.Update(func() {
+					if code != 0 {
+						a.message = "终端连接已结束，可以重新选择会话。"
+					}
+					if closed := a.terms[id]; closed != nil {
+						delete(a.terms, id)
+						go closed.Close()
+					}
+					if a.selected == id {
+						a.selected = ""
+					}
+					a.poll()
+				})
+			},
+		})
+		if err != nil {
+			a.message = err.Error()
+			return
+		}
+		a.terms[id] = term
+	}
+	a.selected = id
+	a.networkOpen = false
+}
+
+func (a *app) stop() {
+	a.busy, a.message = true, "正在停止 VM…"
+	a.state = "stopping"
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_, err := commandOutput(a.launcher.cmd(ctx, "", a.launcher.lima, "stop", instance))
+		a.window.Update(func() {
+			a.finish(err)
+			a.state = "running"
+			if err == nil {
+				a.state, a.selected, a.sessions = "stopped", "", nil
+				a.network, a.ssh = nil, "未运行"
+				a.networkText, a.networkMessage = "", ""
+			}
+			a.poll()
+		})
+	}()
+}
+
+func (a *app) kill() {
+	id := a.selected
+	a.busy = true
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := commandOutput(a.launcher.cmd(ctx, "", a.launcher.lima,
+			a.launcher.tmuxArgs("kill-session", "-t", "="+id)...))
+		a.window.Update(func() { a.finish(err); a.poll() })
+	}()
+}
+
+func (a *app) finish(err error) {
+	a.busy, a.message = false, ""
+	if err != nil {
+		a.message = err.Error()
+	}
+}
