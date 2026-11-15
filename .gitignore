@@ -36,7 +36,7 @@ go.work.sum
 docs/
 mydata/
 mydocs/
-
+.superpowers/
 
 # Local build cache: Lima binaries, VM images, toolchains (tens of GB)
 .mvp-cache/
