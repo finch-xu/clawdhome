@@ -59,6 +59,7 @@ type app struct {
 	// 供 OnClosed/IsDestroyed/对话框父窗口这些窗口专属能力使用。
 	window          windowUpdater
 	realWindow      *mygo.Window
+	locale          locale
 	cfg             vm.Settings
 	command         string
 	message         string
@@ -111,7 +112,25 @@ func main() {
 	}
 	a := &app{launcher: l, cfg: l.Settings(), command: terminalCommand, state: "unknown", ssh: "等待检查", terms: make(map[string]*terminal.Terminal)}
 	a.preferredRoute = egress.ReadRoute(l.Home)
+
+	// 语言和外观都在 App.Run 之前设置：英语是默认语言，没有保存过偏好时由
+	// MyGo 按系统语言选择；保存过则覆盖。
+	mygo.App.SetLanguages(string(localeEN), string(localeZhHans))
+	if a.cfg.LocalePref != "" {
+		mygo.App.SetLocale(a.cfg.LocalePref)
+	}
+	if a.cfg.ThemePref != "" {
+		mygo.Theme.SetSource(toThemeSource(a.cfg.ThemePref))
+	}
+
 	mygo.App.WhenReady(func() {
+		a.locale = toLocale(mygo.App.Locale())
+		mygo.App.OnLocaleChanged(func(tag string) {
+			a.window.Update(func() { a.locale = toLocale(tag) })
+		})
+		mygo.Theme.OnUpdated(func() {
+			a.window.Update(func() {}) // 空回调触发重绘，让 view 用新主题取色
+		})
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu},
 			{Label: "会话", Submenu: []*mygo.MenuItem{
@@ -147,43 +166,44 @@ func defaultWorkspace() string {
 }
 
 func (a *app) view(c *ui.Context) {
-	c.After(time.Second)
-	if time.Since(a.lastPoll) >= 2*time.Second {
+	c.After(viewRefreshInterval)
+	if time.Since(a.lastPoll) >= pollInterval {
 		a.poll()
 	}
-	ui.Column(c).Fill().Padding(12).Gap(8).Children(func() {
-		ui.Row(c.Key("project")).Gap(8).Children(func() {
+	ui.Column(c).Fill().Padding(10).Gap(6).Children(func() {
+		ui.Row(c.Key("project")).Gap(6).Children(func() {
 			project := a.cfg.Project
 			if project == "" {
-				project = "未选择项目"
+				project = tr("topbar.noProject", a.locale)
 			}
 			ui.Text(c, project).Grow(1).SingleLine().Ellipsis("…")
-			if ui.Button(c, "设置").Disabled(a.busy).Clicked() {
+			if ui.Button(c, tr("settings.title", a.locale)).Disabled(a.busy).Clicked() {
 				a.settingsOpen = !a.settingsOpen
 				if a.settingsOpen {
 					a.draft, a.settingsMessage, a.portTestMessage = a.cfg, "", ""
 				}
 			}
 		})
-		a.statusBar(c.Key("status"))
 		if a.settingsOpen {
 			a.settingsView(c.Key("settings"))
 		}
-		ui.Row(c.Key("controls")).Gap(8).Children(func() {
-			ui.TextInput(c, &a.command).Grow(1).Placeholder("CLI 命令").Label("CLI 命令").Disabled(a.busy)
-			if ui.PrimaryButton(c, "运行").Disabled(a.busy).Clicked() {
+		ui.Row(c.Key("controls")).Gap(6).Children(func() {
+			ui.TextInput(c, &a.command).Grow(1).
+				Placeholder(tr("session.commandHint", a.locale)).
+				Label(tr("session.commandLabel", a.locale)).Disabled(a.busy)
+			if ui.PrimaryButton(c, tr("session.run", a.locale)).Disabled(a.busy).Clicked() {
 				a.run(a.command)
 			}
-			if ui.Button(c, "Claude Code").Disabled(a.busy).Clicked() {
+			if ui.Button(c, tr("session.claudeCode", a.locale)).Disabled(a.busy).Clicked() {
 				a.run(claudeCommand)
 			}
-			if ui.Button(c, "终端").Disabled(a.busy).Clicked() {
+			if ui.Button(c, tr("session.terminal", a.locale)).Disabled(a.busy).Clicked() {
 				a.run(terminalCommand)
 			}
-			if ui.Button(c, "显示 VM 桌面").Disabled(a.busy || a.state != "running").Clicked() {
+			if ui.Button(c, tr("topbar.showDesktop", a.locale)).Disabled(a.busy || a.state != "running").Clicked() {
 				a.showDesktop()
 			}
-			if ui.Button(c, "停止 VM").Disabled(a.busy || a.state != "running").Clicked() {
+			if ui.Button(c, tr("topbar.stopVM", a.locale)).Disabled(a.busy || a.state != "running").Clicked() {
 				a.stop()
 			}
 		})
@@ -192,11 +212,11 @@ func (a *app) view(c *ui.Context) {
 		}
 		ui.Row(c.Key("sessions")).Gap(5).Children(func() {
 			for _, s := range a.sessions {
-				if ui.Button(c.Key(s.ID), s.Command+" "+s.ID[4:]).Disabled(a.busy).Clicked() {
+				if ui.Button(c.Key(s.ID), a.sessionLabel(s)).Disabled(a.busy).Clicked() {
 					a.attach(s.ID)
 				}
 			}
-			if a.selected != "" && ui.Button(c, "结束会话").Disabled(a.busy).Clicked() {
+			if a.selected != "" && ui.Button(c, tr("session.end", a.locale)).Disabled(a.busy).Clicked() {
 				a.kill()
 			}
 		})
@@ -208,9 +228,11 @@ func (a *app) view(c *ui.Context) {
 			})
 		} else {
 			ui.Box(c.Key("empty")).Grow(1).Center().Children(func() {
-				ui.Text(c, "运行一个 CLI，或选择已有会话。")
+				ui.Text(c, tr("session.empty", a.locale))
 			})
 		}
+		// 状态条常驻在窗口底部，详情在它上方展开。
+		a.statusBar(c.Key("status"))
 	})
 }
 
@@ -395,4 +417,17 @@ func (a *app) finish(err error) {
 	if err != nil {
 		a.message = err.Error()
 	}
+}
+
+// sessionLabel 组合会话按钮的文案：命令名、短 ID 和运行时长。
+func (a *app) sessionLabel(s vm.Session) string {
+	command := s.Command
+	if command == vm.ExitedCommand {
+		command = tr("session.exited", a.locale)
+	}
+	label := command + " " + s.ID[4:]
+	if d, ok := vm.SessionUptime(s, time.Now()); ok {
+		return label + " · " + formatUptime(d, a.locale)
+	}
+	return label + " · " + tr("session.uptimeUnknown", a.locale)
 }

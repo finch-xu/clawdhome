@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	egress "github.com/finch-xu/clawdhome/lima-egress"
 )
@@ -26,10 +27,25 @@ const (
 
 type Session struct {
 	ID, Command string
+	// StartedAt 是 tmux 记录的会话创建时间；tmux 没给出可解析的时间戳时为零值。
+	StartedAt time.Time
 }
 
 const sessionSeparator = "::"
 const exitedSession = "@vm-exited"
+
+// SessionUptime 返回会话已运行的时长，以及这个时长是否可用。StartedAt 为零值
+// 时返回不可用；创建时间晚于 now（宿主与 guest 的时钟漂移）时钳制为 0，不返回
+// 负数时长。
+func SessionUptime(s Session, now time.Time) (time.Duration, bool) {
+	if s.StartedAt.IsZero() {
+		return 0, false
+	}
+	if d := now.Sub(s.StartedAt); d > 0 {
+		return d, true
+	}
+	return 0, true
+}
 
 type VMInfo struct {
 	Name, Status string
@@ -40,16 +56,25 @@ type VMInfo struct {
 	}
 }
 
-func parseSessions(lines string) []Session {
+// ExitedCommand 是已退出会话的命令占位值；界面按自己的语言显示它。
+const ExitedCommand = exitedSession
+
+// ParseSessions 解析 tmux list-sessions 的输出。每行形如
+// `id::command::created_unix_timestamp`；第三段缺失或无法解析时 StartedAt 留
+// 零值，该行照常保留。
+func ParseSessions(lines string) []Session {
 	var result []Session
 	for _, line := range strings.Split(lines, "\n") {
-		id, command, ok := strings.Cut(line, sessionSeparator)
-		if ok && strings.HasPrefix(id, "cli-") {
-			if command == exitedSession {
-				command = "已退出"
-			}
-			result = append(result, Session{id, command})
+		id, rest, ok := strings.Cut(line, sessionSeparator)
+		if !ok || !strings.HasPrefix(id, "cli-") {
+			continue
 		}
+		command, created, _ := strings.Cut(rest, sessionSeparator)
+		s := Session{ID: id, Command: command}
+		if sec, err := strconv.ParseInt(strings.TrimSpace(created), 10, 64); err == nil {
+			s.StartedAt = time.Unix(sec, 0).UTC()
+		}
+		result = append(result, s)
 	}
 	return result
 }
@@ -61,6 +86,9 @@ type Launcher struct {
 type Settings struct {
 	Project string
 	Port    string
+	// LocalePref 和 ThemePref 为空表示跟随系统。
+	LocalePref string `json:"localePref,omitempty"`
+	ThemePref  string `json:"themePref,omitempty"`
 }
 
 func (l Launcher) Settings() Settings {
@@ -261,7 +289,7 @@ func (l Launcher) TmuxArgs(args ...string) []string {
 
 func (l Launcher) List(ctx context.Context) ([]Session, error) {
 	result, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin,
-		l.TmuxArgs("list-sessions", "-F", "#{session_name}"+sessionSeparator+"#{?pane_dead,"+exitedSession+",#{pane_current_command}}")...))
+		l.TmuxArgs("list-sessions", "-F", "#{session_name}"+sessionSeparator+"#{?pane_dead,"+exitedSession+",#{pane_current_command}}"+sessionSeparator+"#{session_created}")...))
 	if err != nil {
 		if strings.Contains(err.Error(), "no server running") ||
 			(strings.Contains(err.Error(), "error connecting to") && strings.Contains(err.Error(), "No such file")) {
@@ -269,7 +297,7 @@ func (l Launcher) List(ctx context.Context) ([]Session, error) {
 		}
 		return nil, fmt.Errorf("无法列出 VM 中的会话: %w", err)
 	}
-	return parseSessions(string(result)), nil
+	return ParseSessions(string(result)), nil
 }
 
 // Lima's Darwin VZ guest mounts each VirtioFS share under its generated tag.

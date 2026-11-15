@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/finch-xu/clawdhome/vm"
@@ -16,8 +15,8 @@ func TestSaveSettingsTrimsPortBeforePersisting(t *testing.T) {
 	if a.cfg.Port != "7890" {
 		t.Fatalf("persisted port = %q, want the trimmed %q", a.cfg.Port, "7890")
 	}
-	if a.settingsMessage != "设置已保存" {
-		t.Fatalf("settingsMessage = %q, want the saved confirmation", a.settingsMessage)
+	if want := tr("settings.saved", a.locale); a.settingsMessage != want {
+		t.Fatalf("settingsMessage = %q, want %q from the dictionary", a.settingsMessage, want)
 	}
 	if got := l.Settings().Port; got != "7890" {
 		t.Fatalf("port read back from disk = %q, want %q", got, "7890")
@@ -30,7 +29,7 @@ func TestSaveSettingsReportsRejectedPort(t *testing.T) {
 
 	a.saveSettings()
 
-	if a.settingsMessage == "" || a.settingsMessage == "设置已保存" {
+	if a.settingsMessage == "" || a.settingsMessage == tr("settings.saved", a.locale) {
 		t.Fatalf("settingsMessage = %q, want an error for an out-of-range port", a.settingsMessage)
 	}
 	if a.cfg.Port != "" {
@@ -44,8 +43,8 @@ func TestTestPortRejectsInvalidPortWithoutHandshake(t *testing.T) {
 
 		a.testPort()
 
-		if !strings.Contains(a.portTestMessage, "1–65535") {
-			t.Fatalf("port %q: message = %q, want the valid-range hint", port, a.portTestMessage)
+		if want := tr("settings.portRange", a.locale); a.portTestMessage != want {
+			t.Fatalf("port %q: message = %q, want %q from the dictionary", port, a.portTestMessage, want)
 		}
 		if a.portTesting {
 			t.Fatalf("port %q: portTesting = true, want no handshake for an invalid port", port)

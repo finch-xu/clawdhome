@@ -33,7 +33,7 @@ func TestRouteLabelCoversEveryRoute(t *testing.T) {
 		egress.Route("???"): "未知",
 	}
 	for route, want := range labels {
-		if got := RouteLabel(route); got != want {
+		if got := routeLabel(route); got != want {
 			t.Fatalf("RouteLabel(%q) = %q, want %q", route, got, want)
 		}
 	}

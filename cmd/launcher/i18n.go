@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // locale 是应用支持的界面语言。英语是默认语言，也是缺翻译时的回退语言。
 type locale string
@@ -24,8 +28,9 @@ func lookup(dicts map[locale]map[string]string, key string, loc locale) string {
 	return key
 }
 
-// t 取当前语言下 key 对应的文案。
-func t(key string, loc locale) string { return lookup(messages, key, loc) }
+// tr 取当前语言下 key 对应的文案。名字用 tr 而不是 t，因为 Go 测试里 t 是
+// *testing.T 的惯用名，同名会被遮蔽。
+func tr(key string, loc locale) string { return lookup(messages, key, loc) }
 
 // toLocale 把 MyGo 给出的语言标签（如 "zh-Hans-CN"）归到支持的两种语言之一。
 func toLocale(tag string) locale {
@@ -55,6 +60,10 @@ var messages = map[locale]map[string]string{
 		"session.exited":        "Exited",
 		"session.uptimeUnknown": "uptime unknown",
 		"network.routeTitle":    "Egress Route",
+		"network.snapshotTitle": "VM Network Snapshot",
+		"route.system":          "System Route",
+		"route.blocked":         "Offline",
+		"route.unknown":         "Unknown",
 		"network.refresh":       "Refresh",
 		"network.testAnthropic": "Test Anthropic",
 		"network.backToTerm":    "Back to Terminal",
@@ -90,6 +99,7 @@ var messages = map[locale]map[string]string{
 		"status.details":        "Status Details",
 		"status.hideDetails":    "Hide Details",
 		"status.network":        "Network",
+		"status.firewall":       "Firewall",
 		"status.chooseInside":   "Pick a project directory inside the workspace.",
 		"theme.system":          "System",
 		"theme.light":           "Light",
@@ -114,6 +124,10 @@ var messages = map[locale]map[string]string{
 		"session.exited":        "已退出",
 		"session.uptimeUnknown": "运行时长未知",
 		"network.routeTitle":    "出口路由",
+		"network.snapshotTitle": "VM 网络快照",
+		"route.system":          "系统路由",
+		"route.blocked":         "断开公网",
+		"route.unknown":         "未知",
 		"network.refresh":       "刷新连接",
 		"network.testAnthropic": "测试 Anthropic",
 		"network.backToTerm":    "返回终端",
@@ -149,9 +163,25 @@ var messages = map[locale]map[string]string{
 		"status.details":        "状态详情",
 		"status.hideDetails":    "收起详情",
 		"status.network":        "网络连接",
+		"status.firewall":       "防火墙",
 		"status.chooseInside":   "请选择工作空间内的项目目录。",
 		"theme.system":          "系统",
 		"theme.light":           "浅色",
 		"theme.dark":            "深色",
 	},
+}
+
+// formatUptime 把运行时长写成人类可读的形式，按当前语言选单位。
+func formatUptime(d time.Duration, loc locale) string {
+	hours, minutes := int(d.Hours()), int(d.Minutes())%60
+	if loc == localeZhHans {
+		if hours > 0 {
+			return fmt.Sprintf("运行 %d 小时 %d 分", hours, minutes)
+		}
+		return fmt.Sprintf("运行 %d 分钟", minutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("running %dh %dm", hours, minutes)
+	}
+	return fmt.Sprintf("running %dm", minutes)
 }

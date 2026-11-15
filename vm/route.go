@@ -8,8 +8,9 @@ import (
 	egress "github.com/finch-xu/clawdhome/lima-egress"
 )
 
-// RouteLabel 返回出口路由的界面文案。
-func RouteLabel(route egress.Route) string {
+// routeLabel 给出口路由一个名字，用在本包生成的诊断文案里。界面自己的路由
+// 名称走 UI 层的文案字典，不用这个函数。
+func routeLabel(route egress.Route) string {
 	switch route {
 	case egress.RouteClash:
 		return "Clash"

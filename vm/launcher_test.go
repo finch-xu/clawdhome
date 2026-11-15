@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -13,8 +14,13 @@ import (
 
 func TestSessionListOnlyIncludesLauncherSessions(t *testing.T) {
 	input := "cli-56::python3\nmanual::zsh\ncli-90::vim\ncli-91::@vm-exited\n"
-	want := []Session{{"cli-56", "python3"}, {"cli-90", "vim"}, {"cli-91", "已退出"}}
-	if got := parseSessions(input); !reflect.DeepEqual(got, want) {
+	want := []Session{
+		{ID: "cli-56", Command: "python3"},
+		{ID: "cli-90", Command: "vim"},
+		// 已退出的会话保留原始标记，由界面按自己的语言显示。
+		{ID: "cli-91", Command: ExitedCommand},
+	}
+	if got := ParseSessions(input); !reflect.DeepEqual(got, want) {
 		t.Fatalf("sessions = %#v, want %#v", got, want)
 	}
 }
@@ -98,5 +104,91 @@ func TestPrepareUpdatesCallerShareRootBeforeFailingOnMissingVM(t *testing.T) {
 	}
 	if l.ShareRoot != resolvedRealShare {
 		t.Fatalf("ShareRoot = %q, want %q (Prepare must propagate the resolved path to the caller)", l.ShareRoot, resolvedRealShare)
+	}
+}
+
+func TestSaveSettingsRoundTripsThemeAndLocalePrefs(t *testing.T) {
+	home := t.TempDir()
+	l := Launcher{Home: home}
+	want := Settings{Port: "7890", LocalePref: "zh-Hans", ThemePref: "dark"}
+	if err := l.SaveSettings(want); err != nil {
+		t.Fatal(err)
+	}
+	got := l.Settings()
+	if got.LocalePref != "zh-Hans" || got.ThemePref != "dark" {
+		t.Fatalf("prefs not persisted: LocalePref = %q, ThemePref = %q", got.LocalePref, got.ThemePref)
+	}
+}
+
+func TestSettingsDefaultsBothPrefsToFollowSystem(t *testing.T) {
+	home := t.TempDir()
+	legacy := `{"Project":"/some/path","Port":"7890"}`
+	if err := os.WriteFile(filepath.Join(home, "launcher.json"), []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Launcher{Home: home}.Settings()
+	if cfg.ThemePref != "" || cfg.LocalePref != "" {
+		t.Fatalf("a legacy config must leave both prefs empty (follow system), got theme = %q, locale = %q", cfg.ThemePref, cfg.LocalePref)
+	}
+	if cfg.Port != "7890" {
+		t.Fatalf("legacy Port lost: %q", cfg.Port)
+	}
+}
+
+func TestParseSessionsIncludesStartedAt(t *testing.T) {
+	createdAt := time.Date(2026, 11, 15, 11, 18, 0, 0, time.UTC)
+	lines := fmt.Sprintf("cli-abc1::claude::%d\n", createdAt.Unix())
+	sessions := ParseSessions(lines)
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	if !sessions[0].StartedAt.Equal(createdAt) {
+		t.Fatalf("StartedAt = %v, want %v", sessions[0].StartedAt, createdAt)
+	}
+}
+
+func TestParseSessionsHandlesMissingTimestamp(t *testing.T) {
+	sessions := ParseSessions("cli-abc1::claude\n") // 旧格式，没有第三段
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1 (a malformed line must not be dropped)", len(sessions))
+	}
+	if !sessions[0].StartedAt.IsZero() {
+		t.Fatalf("StartedAt = %v, want the zero value when the timestamp is missing", sessions[0].StartedAt)
+	}
+	if sessions[0].Command != "claude" {
+		t.Fatalf("Command = %q, want %q (the other fields must still parse)", sessions[0].Command, "claude")
+	}
+}
+
+func TestParseSessionsHandlesUnparsableTimestamp(t *testing.T) {
+	sessions := ParseSessions("cli-abc1::claude::not-a-number\n")
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	if !sessions[0].StartedAt.IsZero() {
+		t.Fatalf("StartedAt = %v, want the zero value for an unparsable timestamp", sessions[0].StartedAt)
+	}
+}
+
+func TestSessionUptimeReportsElapsedTime(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	got, ok := SessionUptime(Session{StartedAt: now.Add(-42 * time.Minute)}, now)
+	if !ok || got != 42*time.Minute {
+		t.Fatalf("SessionUptime() = (%v, %v), want (42m, true)", got, ok)
+	}
+}
+
+func TestSessionUptimeUnavailableWhenStartedAtMissing(t *testing.T) {
+	got, ok := SessionUptime(Session{}, time.Now())
+	if ok || got != 0 {
+		t.Fatalf("SessionUptime() = (%v, %v), want (0, false) for a zero StartedAt", got, ok)
+	}
+}
+
+func TestSessionUptimeClampsNegativeToZero(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	got, ok := SessionUptime(Session{StartedAt: now.Add(time.Hour)}, now) // 时钟漂移
+	if !ok || got != 0 {
+		t.Fatalf("SessionUptime() = (%v, %v), want (0, true) clamped, never negative", got, ok)
 	}
 }

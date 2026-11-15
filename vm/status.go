@@ -73,7 +73,7 @@ func DescribeStatus(vm, ssh string, cfg Settings, state *egress.GatewayStatus, n
 	s.Proxy = proxyStatusLabels[state.Proxy]
 	if state.Proxy == egress.ProxyDisabled {
 		s.Proxy = "已停用"
-		s.ProxyDetail = "出口 " + RouteLabel(state.Route)
+		s.ProxyDetail = "出口 " + routeLabel(state.Route)
 	}
 	if state.ProxyError != "" {
 		s.ProxyDetail += " · " + state.ProxyError
