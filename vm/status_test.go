@@ -12,17 +12,17 @@ func TestStatusDistinguishesWorkingProxyFromBlockedEgress(t *testing.T) {
 	now := time.Now()
 	snap := egress.GatewayStatus{Running: true, ProxyAddr: "127.0.0.1:1234", Proxy: egress.ProxyConnected,
 		Probe: egress.ProbeUnreachable, Reason: "Google HTTP 503", LastProbe: now, UpdatedAt: now}
-	status := DescribeStatus("running", "可用", Settings{Port: "1234"}, &snap, now)
-	if status.Proxy != "已连接" || status.Probe != "探测失败" || status.Firewall != "外网已阻断" || !strings.Contains(status.ProbeDetail, "Google HTTP 503") {
+	status := DescribeStatus("running", SSHAvailable, Settings{Port: "1234"}, &snap, now)
+	if status.Proxy != ProxyConnected || status.Probe != ProbeUnreachable || status.Firewall != FirewallBlocked || !strings.Contains(status.ProbeDetail, "Google HTTP 503") {
 		t.Fatalf("status = %+v", status)
 	}
 	snap.Online, snap.Probe, snap.Until = true, egress.ProbeReachable, now
-	status = DescribeStatus("running", "可用", Settings{Port: "1234"}, &snap, now)
-	if status.Probe != "结果过期" || status.Firewall != "外网已阻断" {
+	status = DescribeStatus("running", SSHAvailable, Settings{Port: "1234"}, &snap, now)
+	if status.Probe != ProbeExpired || status.Firewall != FirewallBlocked {
 		t.Fatalf("expired status = %+v", status)
 	}
-	status = DescribeStatus("running", "可用", Settings{Port: "2345"}, &snap, now.Add(2*time.Minute))
-	if status.Proxy != "状态未知" || status.Firewall != "状态未知" || !strings.Contains(status.ProxyDetail, "下次启动使用 2345") {
+	status = DescribeStatus("running", SSHAvailable, Settings{Port: "2345"}, &snap, now.Add(2*time.Minute))
+	if status.Proxy != ProxyUnknown || status.Firewall != FirewallUnknown || !strings.Contains(status.ProxyDetail, "下次启动使用 2345") {
 		t.Fatalf("saved port and stale snapshot status = %+v", status)
 	}
 }
@@ -43,15 +43,15 @@ func TestSettingsSavedWithoutStartingVM(t *testing.T) {
 
 func TestDescribeStatusWhenVMNotRunning(t *testing.T) {
 	for _, state := range []string{"", "stopped"} {
-		got := DescribeStatus(state, "未运行", Settings{}, nil, time.Now())
-		if got.Probe != "未探测" || got.Firewall != "未运行" {
-			t.Fatalf("vm %q: probe = %q, firewall = %q; want 未探测/未运行", state, got.Probe, got.Firewall)
+		got := DescribeStatus(state, SSHNotRunning, Settings{}, nil, time.Now())
+		if got.Probe != ProbeSkipped || got.Firewall != FirewallNotRunning {
+			t.Fatalf("vm %q: probe = %q, firewall = %q; want %q/%q", state, got.Probe, got.Firewall, ProbeSkipped, FirewallNotRunning)
 		}
 	}
 }
 
 func TestDescribeStatusWhenGatewayStatusMissing(t *testing.T) {
-	got := DescribeStatus("running", "可用", Settings{Port: "7890"}, nil, time.Now())
+	got := DescribeStatus("running", SSHAvailable, Settings{Port: "7890"}, nil, time.Now())
 	if got.FirewallDetail != "尚未收到当前 VM 的网关状态" {
 		t.Fatalf("firewallDetail = %q, want the missing-gateway note", got.FirewallDetail)
 	}
@@ -62,12 +62,12 @@ func TestDescribeStatusForSystemRouteEgress(t *testing.T) {
 	snap := egress.GatewayStatus{Running: true, Online: true, Route: egress.RouteSystem,
 		Proxy: egress.ProxyDisabled, Probe: egress.ProbeReachable,
 		UpdatedAt: now, Until: now.Add(time.Minute)}
-	got := DescribeStatus("running", "可用", Settings{}, &snap, now)
-	if got.Firewall != "系统路由出站" {
-		t.Fatalf("firewall = %q, want 系统路由出站", got.Firewall)
+	got := DescribeStatus("running", SSHAvailable, Settings{}, &snap, now)
+	if got.Firewall != FirewallSystemRoute {
+		t.Fatalf("firewall = %q, want %q", got.Firewall, FirewallSystemRoute)
 	}
-	if got.Proxy != "已停用" {
-		t.Fatalf("proxy = %q, want 已停用 when the proxy is off", got.Proxy)
+	if got.Proxy != ProxyDisabled {
+		t.Fatalf("proxy = %q, want %q when the proxy is off", got.Proxy, ProxyDisabled)
 	}
 }
 
@@ -76,11 +76,33 @@ func TestDescribeStatusWhenProbeLeaseExpired(t *testing.T) {
 	snap := egress.GatewayStatus{Running: true, Online: true, Route: egress.RouteClash,
 		Proxy: egress.ProxyConnected, Probe: egress.ProbeReachable,
 		UpdatedAt: now, Until: now.Add(-time.Second)}
-	got := DescribeStatus("running", "可用", Settings{}, &snap, now)
-	if got.Probe != "结果过期" {
-		t.Fatalf("probe = %q, want 结果过期 once the lease is past", got.Probe)
+	got := DescribeStatus("running", SSHAvailable, Settings{}, &snap, now)
+	if got.Probe != ProbeExpired {
+		t.Fatalf("probe = %q, want %q once the lease is past", got.Probe, ProbeExpired)
 	}
-	if got.Firewall != "外网已阻断" {
-		t.Fatalf("firewall = %q, want 外网已阻断", got.Firewall)
+	if got.Firewall != FirewallBlocked {
+		t.Fatalf("firewall = %q, want %q", got.Firewall, FirewallBlocked)
+	}
+}
+
+func TestDescribeStatusReturnsCodesNotLocalizedText(t *testing.T) {
+	now := time.Now()
+	snap := egress.GatewayStatus{Running: true, Online: true, Route: egress.RouteClash,
+		Proxy: egress.ProxyConnected, Probe: egress.ProbeReachable,
+		UpdatedAt: now, Until: now.Add(time.Minute)}
+	got := DescribeStatus("running", SSHAvailable, Settings{Port: "7890"}, &snap, now)
+
+	// 状态字段是供界面查字典的稳定标识，不是某种语言的文案。
+	for name, code := range map[string]string{
+		"VM": got.VM, "Proxy": got.Proxy, "Probe": got.Probe, "Firewall": got.Firewall,
+	} {
+		if code == "" {
+			t.Fatalf("%s is empty, want a status code", name)
+		}
+		for _, r := range code {
+			if r > 127 {
+				t.Fatalf("%s = %q contains non-ASCII; status fields must be codes, not localized text", name, code)
+			}
+		}
 	}
 }

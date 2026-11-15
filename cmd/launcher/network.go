@@ -86,9 +86,10 @@ func (a *app) egressSummary() string {
 func (a *app) connectionTable(c *ui.Context) {
 	status := vm.DescribeStatus(a.state, a.ssh, a.cfg, a.network, time.Now())
 	rows := []struct{ label, value string }{
-		{"Clash", status.Proxy + detailSuffix(status.ProxyDetail)},
-		{"Google", status.Probe + detailSuffix(status.ProbeDetail)},
-		{tr("status.firewall", a.locale), status.Firewall + detailSuffix(status.FirewallDetail)},
+		{"Clash", tr("proxy."+status.Proxy, a.locale) + detailSuffix(status.ProxyDetail)},
+		{"Google", tr("probe."+status.Probe, a.locale) + detailSuffix(status.ProbeDetail)},
+		{tr("status.firewall", a.locale),
+			tr("firewall."+status.Firewall, a.locale) + detailSuffix(status.FirewallDetail)},
 	}
 	ui.Column(c).Gap(2).Children(func() {
 		for _, row := range rows {
@@ -108,7 +109,7 @@ func (a *app) refreshNetwork(anthropic bool) {
 	if a.state != "running" || a.networkBusy {
 		return
 	}
-	a.networkBusy, a.networkMessage = true, "正在读取 VM 网络信息…"
+	a.networkBusy, a.networkMessage = true, tr("network.reading", a.locale)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), networkRefreshTimeout)
 		defer cancel()
@@ -116,11 +117,11 @@ func (a *app) refreshNetwork(anthropic bool) {
 		a.window.Update(func() {
 			a.networkBusy = false
 			if err != nil {
-				a.networkMessage = fmt.Sprintf("读取失败 (%v)", err)
+				a.networkMessage = fmt.Sprintf(tr("network.readFailed", a.locale), err)
 				return
 			}
 			a.networkText = snapshot
-			a.networkMessage = "VM 网络快照 · " + time.Now().Format("15:04:05")
+			a.networkMessage = tr("network.snapshotAt", a.locale) + time.Now().Format("15:04:05")
 		})
 	}()
 }

@@ -21,7 +21,8 @@ func (a *app) statusBar(c *ui.Context) {
 	if a.detailsOpen {
 		ui.Column(c.Key("details")).Gap(2).Children(func() {
 			for _, line := range []struct{ label, text string }{
-				{"VM", status.VMDetail}, {"Clash", status.ProxyDetail},
+				{"VM", tr("status.localSSH", a.locale) + tr("ssh."+status.SSH, a.locale)},
+				{"Clash", status.ProxyDetail},
 				{"Google", status.ProbeDetail},
 				{tr("status.firewall", a.locale), status.FirewallDetail},
 			} {
@@ -32,7 +33,7 @@ func (a *app) statusBar(c *ui.Context) {
 		})
 	}
 	ui.Row(c.Key("summary")).Gap(6).Children(func() {
-		ui.Text(c, status.Summary()).Grow(1).SingleLine().Ellipsis("…")
+		ui.Text(c, a.statusSummary(status)).Grow(1).SingleLine().Ellipsis("…")
 		label := tr("status.details", a.locale)
 		if a.detailsOpen {
 			label = tr("status.hideDetails", a.locale)

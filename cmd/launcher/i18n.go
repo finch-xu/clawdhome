@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/finch-xu/clawdhome/vm"
 )
 
 // locale 是应用支持的界面语言。英语是默认语言，也是缺翻译时的回退语言。
@@ -42,6 +44,41 @@ func toLocale(tag string) locale {
 
 var messages = map[locale]map[string]string{
 	localeEN: {
+		"vm.running":            "Running",
+		"vm.stopped":            "Stopped",
+		"vm.starting":           "Starting",
+		"vm.stopping.state":     "Stopping",
+		"vm.unknown":            "Unknown",
+		"proxy.waiting-check":   "Checking",
+		"proxy.unconfigured":    "Not configured",
+		"proxy.connecting":      "Connecting",
+		"proxy.connected":       "Connected",
+		"proxy.failed":          "Failed",
+		"proxy.disabled":        "Disabled",
+		"proxy.unknown":         "Unknown",
+		"probe.waiting":         "Waiting",
+		"probe.reachable":       "Reachable",
+		"probe.unreachable":     "Unreachable",
+		"probe.expired":         "Expired",
+		"probe.skipped":         "Not probed",
+		"firewall.unknown":      "Unknown",
+		"firewall.not-running":  "Not running",
+		"firewall.blocked":      "Internet blocked",
+		"firewall.proxy-only":   "Proxy egress only",
+		"firewall.system-route": "System route egress",
+		"status.localSSH":       "Local SSH ",
+		"app.title":             "macOS CLI Launcher",
+		"menu.sessions":         "Sessions",
+		"menu.startClaude":      "Start Claude Code",
+		"menu.openTerminal":     "Open Terminal",
+		"ssh.checking":          "Checking",
+		"ssh.available":         "Available",
+		"ssh.unavailable":       "Unavailable for now",
+		"ssh.not-running":       "Not running",
+		"ssh.unknown":           "Unknown",
+		"vm.stopping":           "Stopping VM…",
+		"dialog.chooseProject":  "Pick a project directory inside the workspace.",
+		"network.readFailed":    "Read failed (%v)",
 		"nav.session":           "Sessions",
 		"nav.network":           "Network",
 		"nav.settings":          "Settings",
@@ -106,6 +143,41 @@ var messages = map[locale]map[string]string{
 		"theme.dark":            "Dark",
 	},
 	localeZhHans: {
+		"vm.running":            "运行中",
+		"vm.stopped":            "已停止",
+		"vm.starting":           "启动中",
+		"vm.stopping.state":     "停止中",
+		"vm.unknown":            "状态未知",
+		"proxy.waiting-check":   "等待检测",
+		"proxy.unconfigured":    "未配置",
+		"proxy.connecting":      "连接中",
+		"proxy.connected":       "已连接",
+		"proxy.failed":          "连接失败",
+		"proxy.disabled":        "已停用",
+		"proxy.unknown":         "状态未知",
+		"probe.waiting":         "等待探测",
+		"probe.reachable":       "可达",
+		"probe.unreachable":     "探测失败",
+		"probe.expired":         "结果过期",
+		"probe.skipped":         "未探测",
+		"firewall.unknown":      "状态未知",
+		"firewall.not-running":  "未运行",
+		"firewall.blocked":      "外网已阻断",
+		"firewall.proxy-only":   "仅允许经代理出站",
+		"firewall.system-route": "系统路由出站",
+		"status.localSSH":       "本地 SSH ",
+		"app.title":             "macOS CLI 启动器",
+		"menu.sessions":         "会话",
+		"menu.startClaude":      "启动 Claude Code",
+		"menu.openTerminal":     "打开终端",
+		"ssh.checking":          "等待检查",
+		"ssh.available":         "可用",
+		"ssh.unavailable":       "暂不可用",
+		"ssh.not-running":       "未运行",
+		"ssh.unknown":           "状态未知",
+		"vm.stopping":           "正在停止 VM…",
+		"dialog.chooseProject":  "请选择工作空间内的项目目录。",
+		"network.readFailed":    "读取失败 (%v)",
 		"nav.session":           "会话",
 		"nav.network":           "网络",
 		"nav.settings":          "设置",
@@ -184,4 +256,12 @@ func formatUptime(d time.Duration, loc locale) string {
 		return fmt.Sprintf("running %dh %dm", hours, minutes)
 	}
 	return fmt.Sprintf("running %dm", minutes)
+}
+
+// statusSummary 是状态条常驻那一行的文案：四项状态各查字典翻译。
+func (a *app) statusSummary(s vm.StatusView) string {
+	return fmt.Sprintf("VM %s  ·  Clash %s  ·  Google %s  ·  %s %s",
+		tr("vm."+s.VM, a.locale), tr("proxy."+s.Proxy, a.locale),
+		tr("probe."+s.Probe, a.locale),
+		tr("status.firewall", a.locale), tr("firewall."+s.Firewall, a.locale))
 }

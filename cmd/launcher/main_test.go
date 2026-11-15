@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -62,5 +63,42 @@ func TestRunIsIgnoredWhileBusy(t *testing.T) {
 
 	if a.state != "running" {
 		t.Fatalf("state = %q, want it untouched while busy", a.state)
+	}
+}
+
+// TestRunWorksOnALauncherCopy 证明后台 goroutine 在 launcher 的副本上调用
+// Prepare（Prepare 是指针接收者，会改写 ShareRoot），而不是直接写共享的
+// a.launcher；解析后的路径随结果一起经 window.Update 写回。
+func TestRunWorksOnALauncherCopy(t *testing.T) {
+	root := t.TempDir()
+	realShare := filepath.Join(root, "real-share")
+	for _, dir := range []string{"workspace", "claude"} {
+		if err := os.MkdirAll(filepath.Join(realShare, dir), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linkShare := filepath.Join(root, "link-share")
+	if err := os.Symlink(realShare, linkShare); err != nil {
+		t.Fatal(err)
+	}
+	l := vm.Launcher{Root: root, Home: t.TempDir(), ShareRoot: linkShare,
+		LimactlBin: filepath.Join(root, "no-such-limactl")}
+	a := &app{window: syncUpdater{}, launcher: l, state: "stopped",
+		cfg:   vm.Settings{Project: filepath.Join(linkShare, "workspace")},
+		terms: map[string]*terminal.Terminal{}}
+
+	done := make(chan struct{})
+	a.runWithDone("/bin/zsh", done)
+	<-done
+
+	// run 失败（limactl 缺失）后，解析过的 ShareRoot 仍然要写回 a.launcher，
+	// 否则下次 Create 会用过期路径算 VirtioFS 卷名。
+	want, err := filepath.EvalSymlinks(realShare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.launcher.ShareRoot != want {
+		t.Fatalf("a.launcher.ShareRoot = %q, want the resolved %q written back through window.Update",
+			a.launcher.ShareRoot, want)
 	}
 }

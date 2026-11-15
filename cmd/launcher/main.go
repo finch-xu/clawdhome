@@ -110,7 +110,7 @@ func main() {
 	if err := l.EnsureShareDirs(); err != nil {
 		log.Fatal(err)
 	}
-	a := &app{launcher: l, cfg: l.Settings(), command: terminalCommand, state: "unknown", ssh: "等待检查", terms: make(map[string]*terminal.Terminal)}
+	a := &app{launcher: l, cfg: l.Settings(), command: terminalCommand, state: "unknown", ssh: vm.SSHChecking, terms: make(map[string]*terminal.Terminal)}
 	a.preferredRoute = egress.ReadRoute(l.Home)
 
 	// 语言和外观都在 App.Run 之前设置：英语是默认语言，没有保存过偏好时由
@@ -133,13 +133,13 @@ func main() {
 		})
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu},
-			{Label: "会话", Submenu: []*mygo.MenuItem{
-				{Label: "启动 Claude Code", Accelerator: "CmdOrCtrl+Shift+C", Click: a.launchFromMenu(claudeCommand)},
-				{Label: "打开终端", Accelerator: "CmdOrCtrl+Shift+T", Click: a.launchFromMenu(terminalCommand)},
+			{Label: tr("menu.sessions", a.locale), Submenu: []*mygo.MenuItem{
+				{Label: tr("menu.startClaude", a.locale), Accelerator: "CmdOrCtrl+Shift+C", Click: a.launchFromMenu(claudeCommand)},
+				{Label: tr("menu.openTerminal", a.locale), Accelerator: "CmdOrCtrl+Shift+T", Click: a.launchFromMenu(terminalCommand)},
 			}},
 		}))
 		a.realWindow = mygo.NewWindow(mygo.WindowOptions{
-			Title: "macOS CLI 启动器", Width: 920, Height: 620, Content: ui.View(a.view),
+			Title: tr("app.title", a.locale), Width: 920, Height: 620, Content: ui.View(a.view),
 		})
 		a.window = a.realWindow
 		a.realWindow.OnClosed(func() {
@@ -249,7 +249,7 @@ func (a *app) showDesktop() {
 func (a *app) chooseDirectory() {
 	go func() {
 		dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.realWindow, Directory: true,
-			DefaultPath: a.launcher.Workspace(), Message: "请选择工作空间内的项目目录。"})
+			DefaultPath: a.launcher.Workspace(), Message: tr("dialog.chooseProject", a.locale)})
 		a.window.Update(func() {
 			if err != nil {
 				a.settingsMessage = err.Error()
@@ -272,13 +272,13 @@ func (a *app) poll() {
 		network := a.launcher.NetworkStatus(info)
 		var sessions []vm.Session
 		var sessionsErr error
-		ssh := "未运行"
+		ssh := vm.SSHNotRunning
 		if info.Status == "running" {
 			sessions, sessionsErr = a.launcher.List(ctx)
-			ssh = "可用"
+			ssh = vm.SSHAvailable
 			if sessionsErr != nil {
 				if err := a.launcher.CheckSSH(ctx); err != nil {
-					ssh = "暂不可用"
+					ssh = vm.SSHUnavailable
 				}
 			}
 		}
@@ -288,7 +288,7 @@ func (a *app) poll() {
 				return
 			}
 			if vmErr != nil {
-				a.state, a.ssh, a.network = "unknown", "状态未知", nil
+				a.state, a.ssh, a.network = "unknown", vm.SSHUnknown, nil
 				return
 			}
 			a.state, a.ssh, a.network = info.Status, ssh, network
@@ -318,28 +318,32 @@ func (a *app) runWithDone(command string, done chan struct{}) {
 		return
 	}
 	cfg := a.cfg
-	a.busy, a.message = true, "正在启动会话…"
+	a.busy, a.message = true, tr("session.starting", a.locale)
 	previous := a.state
 	if a.state != "running" {
 		a.state = "starting"
 	}
+	// 后台在 launcher 的副本上工作，不直接写 a.launcher：Prepare 会把 ShareRoot
+	// 解析成符号链接指向的真实路径，这次更新随结果一起经 window.Update 写回。
+	launcher := a.launcher
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 		defer cancel()
-		err := a.launcher.Prepare(ctx, cfg)
+		err := launcher.Prepare(ctx, cfg)
 		var id string
 		var sessions []vm.Session
 		if err == nil {
-			id, err = a.launcher.Create(ctx, cfg.Project, command)
+			id, err = launcher.Create(ctx, cfg.Project, command)
 		}
 		if err == nil {
-			sessions, _ = a.launcher.List(ctx)
+			sessions, _ = launcher.List(ctx)
 		}
 		a.window.Update(func() {
+			a.launcher = launcher
 			a.finish(err)
 			a.state = previous
 			if err == nil {
-				a.state, a.sessions, a.ssh = "running", sessions, "可用"
+				a.state, a.sessions, a.ssh = "running", sessions, vm.SSHAvailable
 				a.attach(id)
 			}
 			a.poll()
@@ -358,7 +362,7 @@ func (a *app) attach(id string) {
 			OnExit: func(code int) {
 				a.window.Update(func() {
 					if code != 0 {
-						a.message = "终端连接已结束，可以重新选择会话。"
+						a.message = tr("session.reattach", a.locale)
 					}
 					if closed := a.terms[id]; closed != nil {
 						delete(a.terms, id)
@@ -382,7 +386,7 @@ func (a *app) attach(id string) {
 }
 
 func (a *app) stop() {
-	a.busy, a.message = true, "正在停止 VM…"
+	a.busy, a.message = true, tr("vm.stopping", a.locale)
 	a.state = "stopping"
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
@@ -393,7 +397,7 @@ func (a *app) stop() {
 			a.state = "running"
 			if err == nil {
 				a.state, a.selected, a.sessions = "stopped", "", nil
-				a.network, a.ssh = nil, "未运行"
+				a.network, a.ssh = nil, vm.SSHNotRunning
 				a.networkText, a.networkMessage = "", ""
 			}
 			a.poll()
