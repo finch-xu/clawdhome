@@ -40,3 +40,47 @@ func TestSettingsSavedWithoutStartingVM(t *testing.T) {
 		t.Fatal("invalid port replaced persisted settings")
 	}
 }
+
+func TestDescribeStatusWhenVMNotRunning(t *testing.T) {
+	for _, state := range []string{"", "stopped"} {
+		got := DescribeStatus(state, "未运行", Settings{}, nil, time.Now())
+		if got.Probe != "未探测" || got.Firewall != "未运行" {
+			t.Fatalf("vm %q: probe = %q, firewall = %q; want 未探测/未运行", state, got.Probe, got.Firewall)
+		}
+	}
+}
+
+func TestDescribeStatusWhenGatewayStatusMissing(t *testing.T) {
+	got := DescribeStatus("running", "可用", Settings{Port: "7890"}, nil, time.Now())
+	if got.FirewallDetail != "尚未收到当前 VM 的网关状态" {
+		t.Fatalf("firewallDetail = %q, want the missing-gateway note", got.FirewallDetail)
+	}
+}
+
+func TestDescribeStatusForSystemRouteEgress(t *testing.T) {
+	now := time.Now()
+	snap := egress.GatewayStatus{Running: true, Online: true, Route: egress.RouteSystem,
+		Proxy: egress.ProxyDisabled, Probe: egress.ProbeReachable,
+		UpdatedAt: now, Until: now.Add(time.Minute)}
+	got := DescribeStatus("running", "可用", Settings{}, &snap, now)
+	if got.Firewall != "系统路由出站" {
+		t.Fatalf("firewall = %q, want 系统路由出站", got.Firewall)
+	}
+	if got.Proxy != "已停用" {
+		t.Fatalf("proxy = %q, want 已停用 when the proxy is off", got.Proxy)
+	}
+}
+
+func TestDescribeStatusWhenProbeLeaseExpired(t *testing.T) {
+	now := time.Now()
+	snap := egress.GatewayStatus{Running: true, Online: true, Route: egress.RouteClash,
+		Proxy: egress.ProxyConnected, Probe: egress.ProbeReachable,
+		UpdatedAt: now, Until: now.Add(-time.Second)}
+	got := DescribeStatus("running", "可用", Settings{}, &snap, now)
+	if got.Probe != "结果过期" {
+		t.Fatalf("probe = %q, want 结果过期 once the lease is past", got.Probe)
+	}
+	if got.Firewall != "外网已阻断" {
+		t.Fatalf("firewall = %q, want 外网已阻断", got.Firewall)
+	}
+}

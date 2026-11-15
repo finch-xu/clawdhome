@@ -44,12 +44,21 @@ exit 127
 
 const claudeCommand = terminalCommand + " -lic '" + claudeGuestScript + "'"
 
+// windowUpdater 把状态写回 UI 线程。*mygo.Window 满足这个接口；测试用一个
+// 同步执行回调的替身替换它，以便断言后台工作完成后的状态。
+type windowUpdater interface {
+	Update(func())
+}
+
 // app 的所有字段只在 UI 线程读写：view 渲染回调、按钮点击回调，或
 // window.Update(func(){...}) 回调内部。后台 goroutine 只读取启动前拷贝的
 // 快照值，结果一律通过 window.Update 写回。
 type app struct {
-	launcher        vm.Launcher
-	window          *mygo.Window
+	launcher vm.Launcher
+	// window 用于状态回写，测试里可替换；realWindow 持有真实窗口，
+	// 供 OnClosed/IsDestroyed/对话框父窗口这些窗口专属能力使用。
+	window          windowUpdater
+	realWindow      *mygo.Window
 	cfg             vm.Settings
 	command         string
 	message         string
@@ -110,10 +119,11 @@ func main() {
 				{Label: "打开终端", Accelerator: "CmdOrCtrl+Shift+T", Click: a.launchFromMenu(terminalCommand)},
 			}},
 		}))
-		a.window = mygo.NewWindow(mygo.WindowOptions{
+		a.realWindow = mygo.NewWindow(mygo.WindowOptions{
 			Title: "macOS CLI 启动器", Width: 920, Height: 620, Content: ui.View(a.view),
 		})
-		a.window.OnClosed(func() {
+		a.window = a.realWindow
+		a.realWindow.OnClosed(func() {
 			for id, term := range a.terms {
 				delete(a.terms, id)
 				_ = term.Close()
@@ -216,7 +226,7 @@ func (a *app) showDesktop() {
 
 func (a *app) chooseDirectory() {
 	go func() {
-		dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.window, Directory: true,
+		dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.realWindow, Directory: true,
 			DefaultPath: a.launcher.Workspace(), Message: "请选择工作空间内的项目目录。"})
 		a.window.Update(func() {
 			if err != nil {
@@ -269,14 +279,20 @@ func (a *app) poll() {
 
 func (a *app) launchFromMenu(command string) func(*mygo.MenuItem, *mygo.Window) {
 	return func(_ *mygo.MenuItem, _ *mygo.Window) {
-		if a.window != nil && !a.window.IsDestroyed() {
+		if a.realWindow != nil && !a.realWindow.IsDestroyed() {
 			a.window.Update(func() { a.run(command) })
 		}
 	}
 }
 
-func (a *app) run(command string) {
+func (a *app) run(command string) { a.runWithDone(command, nil) }
+
+// runWithDone 在后台工作结束后关闭 done（如果非 nil），让测试可以同步等待。
+func (a *app) runWithDone(command string, done chan struct{}) {
 	if a.busy {
+		if done != nil {
+			close(done)
+		}
 		return
 	}
 	cfg := a.cfg
@@ -286,7 +302,7 @@ func (a *app) run(command string) {
 		a.state = "starting"
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 26*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 		defer cancel()
 		err := a.launcher.Prepare(ctx, cfg)
 		var id string
@@ -306,6 +322,9 @@ func (a *app) run(command string) {
 			}
 			a.poll()
 		})
+		if done != nil {
+			close(done)
+		}
 	}()
 }
 
