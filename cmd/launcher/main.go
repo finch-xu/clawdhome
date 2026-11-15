@@ -14,6 +14,19 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	egress "github.com/finch-xu/clawdhome/lima-egress"
+	"github.com/finch-xu/clawdhome/vm"
+)
+
+// 各操作的超时预算。启动 VM 要下载/引导 guest，所以给得最宽；停止和结束会话
+// 只是发一条命令，给得最紧。
+const (
+	viewRefreshInterval = time.Second      // view 自身的重绘节奏
+	pollInterval        = 2 * time.Second  // 两次状态轮询之间的最小间隔
+	pollTimeout         = 5 * time.Second  // 单次状态轮询的超时
+	showDesktopTimeout  = 3 * time.Second  // 打开 VM 桌面窗口
+	runTimeout          = 26 * time.Minute // 准备并启动 VM，再开一个会话
+	stopTimeout         = time.Minute      // 停止 VM
+	killTimeout         = 5 * time.Second  // 结束一个 tmux 会话
 )
 
 const terminalCommand = "/bin/zsh"
@@ -31,14 +44,17 @@ exit 127
 
 const claudeCommand = terminalCommand + " -lic '" + claudeGuestScript + "'"
 
+// app 的所有字段只在 UI 线程读写：view 渲染回调、按钮点击回调，或
+// window.Update(func(){...}) 回调内部。后台 goroutine 只读取启动前拷贝的
+// 快照值，结果一律通过 window.Update 写回。
 type app struct {
-	launcher        launcher
+	launcher        vm.Launcher
 	window          *mygo.Window
-	cfg             settings
+	cfg             vm.Settings
 	command         string
 	message         string
 	state           string
-	sessions        []session
+	sessions        []vm.Session
 	terms           map[string]*terminal.Terminal
 	selected        string
 	busy            bool
@@ -48,7 +64,7 @@ type app struct {
 	lastPoll        time.Time
 	settingsOpen    bool
 	detailsOpen     bool
-	draft           settings
+	draft           vm.Settings
 	settingsMessage string
 	portTestMessage string
 	portTesting     bool
@@ -75,17 +91,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	shareRoot, err := defaultShareRoot()
+	shareRoot, err := vm.DefaultShareRoot()
 	if err != nil {
 		log.Fatal(err)
 	}
-	l := launcher{root: root, home: strings.TrimSpace(string(home)), shareRoot: shareRoot,
-		lima: filepath.Join(root, ".mvp-cache", "lima", "bin", "limactl-mvp")}
-	if err := l.ensureShareDirs(); err != nil {
+	l := vm.Launcher{Root: root, Home: strings.TrimSpace(string(home)), ShareRoot: shareRoot,
+		LimactlBin: filepath.Join(root, ".mvp-cache", "lima", "bin", "limactl-mvp")}
+	if err := l.EnsureShareDirs(); err != nil {
 		log.Fatal(err)
 	}
-	a := &app{launcher: l, cfg: l.settings(), command: terminalCommand, state: "unknown", ssh: "等待检查", terms: make(map[string]*terminal.Terminal)}
-	a.preferredRoute = egress.ReadRoute(l.home)
+	a := &app{launcher: l, cfg: l.Settings(), command: terminalCommand, state: "unknown", ssh: "等待检查", terms: make(map[string]*terminal.Terminal)}
+	a.preferredRoute = egress.ReadRoute(l.Home)
 	mygo.App.WhenReady(func() {
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu},
@@ -192,7 +208,7 @@ func (a *app) showDesktop() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := a.launcher.showDesktop(ctx); err != nil {
+		if err := a.launcher.ShowDesktop(ctx); err != nil {
 			a.window.Update(func() { a.message = err.Error() })
 		}
 	}()
@@ -201,7 +217,7 @@ func (a *app) showDesktop() {
 func (a *app) chooseDirectory() {
 	go func() {
 		dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.window, Directory: true,
-			DefaultPath: a.launcher.workspace(), Message: "请选择工作空间内的项目目录。"})
+			DefaultPath: a.launcher.Workspace(), Message: "请选择工作空间内的项目目录。"})
 		a.window.Update(func() {
 			if err != nil {
 				a.settingsMessage = err.Error()
@@ -220,16 +236,16 @@ func (a *app) poll() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		vm, vmErr := a.launcher.inspectVM(ctx)
-		network := a.launcher.networkStatus(vm)
-		var sessions []session
+		info, vmErr := a.launcher.InspectVM(ctx)
+		network := a.launcher.NetworkStatus(info)
+		var sessions []vm.Session
 		var sessionsErr error
 		ssh := "未运行"
-		if vm.Status == "running" {
-			sessions, sessionsErr = a.launcher.list(ctx)
+		if info.Status == "running" {
+			sessions, sessionsErr = a.launcher.List(ctx)
 			ssh = "可用"
 			if sessionsErr != nil {
-				if _, err := commandOutput(a.launcher.cmd(ctx, "", a.launcher.lima, vmShellArgs("/usr/bin/true")...)); err != nil {
+				if err := a.launcher.CheckSSH(ctx); err != nil {
 					ssh = "暂不可用"
 				}
 			}
@@ -243,7 +259,7 @@ func (a *app) poll() {
 				a.state, a.ssh, a.network = "unknown", "状态未知", nil
 				return
 			}
-			a.state, a.ssh, a.network = vm.Status, ssh, network
+			a.state, a.ssh, a.network = info.Status, ssh, network
 			if sessionsErr == nil {
 				a.sessions = sessions
 			}
@@ -272,14 +288,14 @@ func (a *app) run(command string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 26*time.Minute)
 		defer cancel()
-		err := a.launcher.prepare(ctx, cfg)
+		err := a.launcher.Prepare(ctx, cfg)
 		var id string
-		var sessions []session
+		var sessions []vm.Session
 		if err == nil {
-			id, err = a.launcher.create(ctx, cfg.Project, command)
+			id, err = a.launcher.Create(ctx, cfg.Project, command)
 		}
 		if err == nil {
-			sessions, _ = a.launcher.list(ctx)
+			sessions, _ = a.launcher.List(ctx)
 		}
 		a.window.Update(func() {
 			a.finish(err)
@@ -296,8 +312,8 @@ func (a *app) run(command string) {
 func (a *app) attach(id string) {
 	if a.terms[id] == nil {
 		term, err := terminal.New(terminal.Options{
-			Command: append([]string{a.launcher.lima}, a.launcher.tmuxArgs("attach-session", "-t", "="+id)...),
-			Env:     []string{"LIMA_HOME=" + a.launcher.home},
+			Command: append([]string{a.launcher.LimactlBin}, a.launcher.TmuxArgs("attach-session", "-t", "="+id)...),
+			Env:     []string{"LIMA_HOME=" + a.launcher.Home},
 			OnExit: func(code int) {
 				a.window.Update(func() {
 					if code != 0 {
@@ -328,9 +344,9 @@ func (a *app) stop() {
 	a.busy, a.message = true, "正在停止 VM…"
 	a.state = "stopping"
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 		defer cancel()
-		_, err := commandOutput(a.launcher.cmd(ctx, "", a.launcher.lima, "stop", instance))
+		err := a.launcher.Stop(ctx)
 		a.window.Update(func() {
 			a.finish(err)
 			a.state = "running"
@@ -348,10 +364,9 @@ func (a *app) kill() {
 	id := a.selected
 	a.busy = true
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), killTimeout)
 		defer cancel()
-		_, err := commandOutput(a.launcher.cmd(ctx, "", a.launcher.lima,
-			a.launcher.tmuxArgs("kill-session", "-t", "="+id)...))
+		err := a.launcher.KillSession(ctx, id)
 		a.window.Update(func() { a.finish(err); a.poll() })
 	}()
 }

@@ -1,4 +1,4 @@
-package main
+package vm
 
 import (
 	"bytes"
@@ -21,68 +21,68 @@ import (
 
 const (
 	instance      = "cli-mvp"
-	guestTimeZone = "America/Los_Angeles"
+	GuestTimeZone = "America/Los_Angeles"
 )
 
-type session struct {
+type Session struct {
 	ID, Command string
 }
 
 const sessionSeparator = "::"
 const exitedSession = "@vm-exited"
 
-type vmInfo struct {
+type VMInfo struct {
 	Name, Status string
 	HostAgentPID int
 	Config       struct {
 		TimeZone string
-		Mounts   []vmMount
+		Mounts   []VMMount
 	}
 }
 
-func parseSessions(lines string) []session {
-	var result []session
+func parseSessions(lines string) []Session {
+	var result []Session
 	for _, line := range strings.Split(lines, "\n") {
 		id, command, ok := strings.Cut(line, sessionSeparator)
 		if ok && strings.HasPrefix(id, "cli-") {
 			if command == exitedSession {
 				command = "已退出"
 			}
-			result = append(result, session{id, command})
+			result = append(result, Session{id, command})
 		}
 	}
 	return result
 }
 
-type launcher struct {
-	root, home, lima, shareRoot string
+type Launcher struct {
+	Root, Home, LimactlBin, ShareRoot string
 }
 
-type settings struct {
+type Settings struct {
 	Project string
 	Port    string
 }
 
-func (l launcher) settings() settings {
-	var cfg settings
-	raw, err := os.ReadFile(filepath.Join(l.home, "launcher.json"))
+func (l Launcher) Settings() Settings {
+	var cfg Settings
+	raw, err := os.ReadFile(filepath.Join(l.Home, "launcher.json"))
 	if err == nil {
 		_ = json.Unmarshal(raw, &cfg)
 	}
-	if l.shareRoot != "" {
-		if _, err := l.projectInWorkspace(cfg.Project); err != nil {
-			cfg.Project = l.workspace()
+	if l.ShareRoot != "" {
+		if _, err := l.ProjectInWorkspace(cfg.Project); err != nil {
+			cfg.Project = l.Workspace()
 		}
 	}
 	return cfg
 }
 
-func (l launcher) saveSettings(cfg settings) error {
-	if cfg.Port != "" && !validPort(cfg.Port) {
+func (l Launcher) SaveSettings(cfg Settings) error {
+	if cfg.Port != "" && !ValidPort(cfg.Port) {
 		return fmt.Errorf("Clash 端口须为 1–65535")
 	}
 	if cfg.Project != "" {
-		if _, err := l.projectInWorkspace(cfg.Project); err != nil {
+		if _, err := l.ProjectInWorkspace(cfg.Project); err != nil {
 			return err
 		}
 	}
@@ -90,7 +90,7 @@ func (l launcher) saveSettings(cfg settings) error {
 	if err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(l.home, ".launcher-*.json")
+	file, err := os.CreateTemp(l.Home, ".launcher-*.json")
 	if err != nil {
 		return err
 	}
@@ -103,17 +103,17 @@ func (l launcher) saveSettings(cfg settings) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return os.Rename(file.Name(), filepath.Join(l.home, "launcher.json"))
+	return os.Rename(file.Name(), filepath.Join(l.Home, "launcher.json"))
 }
 
-func validPort(port string) bool {
+func ValidPort(port string) bool {
 	n, err := strconv.ParseUint(port, 10, 16)
 	return err == nil && n > 0
 }
 
-func (l launcher) cmd(ctx context.Context, port, path string, args ...string) *exec.Cmd {
+func (l Launcher) Cmd(ctx context.Context, port, path string, args ...string) *exec.Cmd {
 	command := exec.CommandContext(ctx, path, args...)
-	command.Env = append(os.Environ(), "LIMA_HOME="+l.home, "MVP_LIMACTL="+l.lima,
+	command.Env = append(os.Environ(), "LIMA_HOME="+l.Home, "MVP_LIMACTL="+l.LimactlBin,
 		"MVP_CLASH_SOCKS5=127.0.0.1:"+port)
 	return command
 }
@@ -128,20 +128,20 @@ func commandOutput(cmd *exec.Cmd) ([]byte, error) {
 	return out, nil
 }
 
-func (l launcher) inspectVM(ctx context.Context) (vmInfo, error) {
-	out, err := commandOutput(l.cmd(ctx, "", l.lima, "list", "--json"))
+func (l Launcher) InspectVM(ctx context.Context) (VMInfo, error) {
+	out, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, "list", "--json"))
 	if err != nil {
-		return vmInfo{}, err
+		return VMInfo{}, err
 	}
 	return parseVMInfo(string(out))
 }
 
-func (l launcher) showDesktop(ctx context.Context) error {
+func (l Launcher) ShowDesktop(ctx context.Context) error {
 	dialer := net.Dialer{}
 	transport := &http.Transport{
 		DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, "unix", filepath.Join(l.home, instance, "ha.sock"))
+			return dialer.DialContext(ctx, "unix", filepath.Join(l.Home, instance, "ha.sock"))
 		},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/v1/desktop", nil)
@@ -166,35 +166,35 @@ func (l launcher) showDesktop(ctx context.Context) error {
 	}
 }
 
-func parseVMInfo(lines string) (vmInfo, error) {
+func parseVMInfo(lines string) (VMInfo, error) {
 	for _, line := range strings.Split(strings.TrimSpace(lines), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		var vm vmInfo
+		var vm VMInfo
 		if err := json.Unmarshal([]byte(line), &vm); err != nil {
-			return vmInfo{}, err
+			return VMInfo{}, err
 		}
 		if vm.Name == instance {
 			vm.Status = strings.ToLower(vm.Status)
 			return vm, nil
 		}
 	}
-	return vmInfo{}, nil
+	return VMInfo{}, nil
 }
 
 // prepare 用指针接收者：第一步的 ensureShareDirs 会把 shareRoot 解析成符号链接
 // 指向的真实路径，这次更新必须对调用者可见，因为 guestProjectPath 用 shareRoot
 // 算 VirtioFS 卷名的哈希。
-func (l *launcher) prepare(ctx context.Context, cfg settings) error {
-	if err := l.ensureShareDirs(); err != nil {
+func (l *Launcher) Prepare(ctx context.Context, cfg Settings) error {
+	if err := l.EnsureShareDirs(); err != nil {
 		return err
 	}
-	if _, err := l.projectInWorkspace(cfg.Project); err != nil {
+	if _, err := l.ProjectInWorkspace(cfg.Project); err != nil {
 		return err
 	}
 	mounts := l.sharedMounts()
-	vm, err := l.inspectVM(ctx)
+	vm, err := l.InspectVM(ctx)
 	if err != nil {
 		return err
 	}
@@ -204,42 +204,42 @@ func (l *launcher) prepare(ctx context.Context, cfg settings) error {
 		}
 		return l.ensureGuestSetup(ctx)
 	}
-	if egress.ReadRoute(l.home) == egress.RouteClash && !validPort(cfg.Port) {
+	if egress.ReadRoute(l.Home) == egress.RouteClash && !ValidPort(cfg.Port) {
 		return fmt.Errorf("请在设置中填写有效的 Clash 端口")
 	}
 	if vm.Status == "" {
-		if _, err := commandOutput(l.cmd(ctx, cfg.Port, filepath.Join(l.root, "scripts", "create-vm.sh"), l.shareRoot)); err != nil {
+		if _, err := commandOutput(l.Cmd(ctx, cfg.Port, filepath.Join(l.Root, "scripts", "create-vm.sh"), l.ShareRoot)); err != nil {
 			return err
 		}
-	} else if !vm.hasMounts(mounts) || vm.Config.TimeZone != guestTimeZone {
+	} else if !vm.hasMounts(mounts) || vm.Config.TimeZone != GuestTimeZone {
 		encoded, err := json.Marshal(mounts)
 		if err != nil {
 			return fmt.Errorf("序列化共享目录配置失败: %w", err)
 		}
-		expression := ".mounts = " + string(encoded) + " | .timezone = " + strconv.Quote(guestTimeZone)
-		if _, err := commandOutput(l.cmd(ctx, cfg.Port, l.lima, "edit", "--tty=false", "--set", expression, instance)); err != nil {
+		expression := ".mounts = " + string(encoded) + " | .timezone = " + strconv.Quote(GuestTimeZone)
+		if _, err := commandOutput(l.Cmd(ctx, cfg.Port, l.LimactlBin, "edit", "--tty=false", "--set", expression, instance)); err != nil {
 			return err
 		}
 	}
-	if err := l.saveSettings(cfg); err != nil {
+	if err := l.SaveSettings(cfg); err != nil {
 		return err
 	}
-	if _, err := commandOutput(l.cmd(ctx, cfg.Port, l.lima, "start", "--tty=false", "--timeout=25m", instance)); err != nil {
+	if _, err := commandOutput(l.Cmd(ctx, cfg.Port, l.LimactlBin, "start", "--tty=false", "--timeout=25m", instance)); err != nil {
 		return err
 	}
 	return l.ensureGuestSetup(ctx)
 }
 
-func (l launcher) ensureGuestSetup(ctx context.Context) error {
+func (l Launcher) ensureGuestSetup(ctx context.Context) error {
 	if err := l.linkGuestShares(ctx); err != nil {
 		return err
 	}
-	if _, err := commandOutput(l.cmd(ctx, "", l.lima,
+	if _, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin,
 		vmShellArgs(`test -r "$HOME/.local/bin/cli-mvp.tmux.conf" &&
-			case "$(/usr/bin/readlink /etc/localtime)" in */zoneinfo/`+guestTimeZone+`) ;; *) exit 1 ;; esac && `+execTmux, "-V")...)); err == nil {
+			case "$(/usr/bin/readlink /etc/localtime)" in */zoneinfo/`+GuestTimeZone+`) ;; *) exit 1 ;; esac && `+execTmux, "-V")...)); err == nil {
 		return nil
 	}
-	_, err := commandOutput(l.cmd(ctx, "", filepath.Join(l.root, "scripts", "setup-guest.sh")))
+	_, err := commandOutput(l.Cmd(ctx, "", filepath.Join(l.Root, "scripts", "setup-guest.sh")))
 	if err != nil {
 		return fmt.Errorf("VM 初始化失败，请检查本地 tmux 构建与 guest 设置: %w", err)
 	}
@@ -252,13 +252,13 @@ func vmShellArgs(script string, args ...string) []string {
 	return append([]string{"shell", "--shell=/bin/sh", instance, "/bin/sh", "-c", script, "launcher"}, args...)
 }
 
-func (l launcher) tmuxArgs(args ...string) []string {
+func (l Launcher) TmuxArgs(args ...string) []string {
 	return vmShellArgs(execTmux, args...)
 }
 
-func (l launcher) list(ctx context.Context) ([]session, error) {
-	result, err := commandOutput(l.cmd(ctx, "", l.lima,
-		l.tmuxArgs("list-sessions", "-F", "#{session_name}"+sessionSeparator+"#{?pane_dead,"+exitedSession+",#{pane_current_command}}")...))
+func (l Launcher) List(ctx context.Context) ([]Session, error) {
+	result, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin,
+		l.TmuxArgs("list-sessions", "-F", "#{session_name}"+sessionSeparator+"#{?pane_dead,"+exitedSession+",#{pane_current_command}}")...))
 	if err != nil {
 		if strings.Contains(err.Error(), "no server running") ||
 			(strings.Contains(err.Error(), "error connecting to") && strings.Contains(err.Error(), "No such file")) {
@@ -275,11 +275,11 @@ func guestProjectPath(hostPath string) string {
 	return "/Volumes/My Shared Files/lima-" + hex.EncodeToString(hash[:8])
 }
 
-func (l launcher) create(ctx context.Context, project, command string) (string, error) {
+func (l Launcher) Create(ctx context.Context, project, command string) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("请输入 CLI 命令")
 	}
-	rel, err := l.projectInWorkspace(project)
+	rel, err := l.ProjectInWorkspace(project)
 	if err != nil {
 		return "", err
 	}
@@ -291,15 +291,15 @@ func (l launcher) create(ctx context.Context, project, command string) (string, 
 	// Validate the share before tmux can fall back to the guest home directory.
 	args := vmShellArgs(`cd "$HOME/workspace/$1" || { echo "项目目录未挂载" >&2; exit 1; }; shift; `+execTmux,
 		rel, "new-session", "-d", "-s", id, command)
-	_, err = commandOutput(l.cmd(ctx, "", l.lima, args...))
+	_, err = commandOutput(l.Cmd(ctx, "", l.LimactlBin, args...))
 	return id, err
 }
 
-func (l launcher) networkStatus(vm vmInfo) *egress.GatewayStatus {
+func (l Launcher) NetworkStatus(vm VMInfo) *egress.GatewayStatus {
 	if vm.Status != "running" || vm.HostAgentPID == 0 {
 		return nil
 	}
-	raw, err := os.ReadFile(filepath.Join(l.home, instance, "mvp-network.json"))
+	raw, err := os.ReadFile(filepath.Join(l.Home, instance, "mvp-network.json"))
 	if err != nil {
 		return nil
 	}
@@ -308,4 +308,16 @@ func (l launcher) networkStatus(vm vmInfo) *egress.GatewayStatus {
 		return nil
 	}
 	return &state
+}
+
+// Stop 停止虚拟机，guest 内运行的进程随之结束。
+func (l Launcher) Stop(ctx context.Context) error {
+	_, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, "stop", instance))
+	return err
+}
+
+// KillSession 结束 guest 内指定的 tmux 会话。
+func (l Launcher) KillSession(ctx context.Context, id string) error {
+	_, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, l.TmuxArgs("kill-session", "-t", "="+id)...))
+	return err
 }

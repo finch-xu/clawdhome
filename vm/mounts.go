@@ -1,4 +1,4 @@
-package main
+package vm
 
 import (
 	"context"
@@ -9,13 +9,13 @@ import (
 	"strings"
 )
 
-type vmMount struct {
+type VMMount struct {
 	Location   string `json:"location"`
 	MountPoint string `json:"mountPoint,omitempty"`
 	Writable   bool   `json:"writable"`
 }
 
-func defaultShareRoot() (string, error) {
+func DefaultShareRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -23,24 +23,24 @@ func defaultShareRoot() (string, error) {
 	return filepath.Join(home, "macOS-CLI-Launcher", instance), nil
 }
 
-func (l launcher) workspace() string { return filepath.Join(l.shareRoot, "workspace") }
+func (l Launcher) Workspace() string { return filepath.Join(l.ShareRoot, "workspace") }
 
-func (l launcher) sharedMounts() []vmMount {
-	return []vmMount{
-		{Location: l.workspace(), Writable: true},
-		{Location: filepath.Join(l.shareRoot, "claude"), Writable: true},
+func (l Launcher) sharedMounts() []VMMount {
+	return []VMMount{
+		{Location: l.Workspace(), Writable: true},
+		{Location: filepath.Join(l.ShareRoot, "claude"), Writable: true},
 	}
 }
 
-func (l *launcher) ensureShareDirs() error {
-	if err := os.MkdirAll(l.shareRoot, 0700); err != nil {
+func (l *Launcher) EnsureShareDirs() error {
+	if err := os.MkdirAll(l.ShareRoot, 0700); err != nil {
 		return err
 	}
-	root, err := filepath.EvalSymlinks(l.shareRoot)
+	root, err := filepath.EvalSymlinks(l.ShareRoot)
 	if err != nil {
 		return err
 	}
-	l.shareRoot = root
+	l.ShareRoot = root
 	for _, mount := range l.sharedMounts() {
 		if err := os.MkdirAll(mount.Location, 0700); err != nil {
 			return err
@@ -56,8 +56,8 @@ func (l *launcher) ensureShareDirs() error {
 	return nil
 }
 
-func (l launcher) projectInWorkspace(project string) (string, error) {
-	invalid := fmt.Errorf("请在工作空间内选择项目目录 (%s)", l.workspace())
+func (l Launcher) ProjectInWorkspace(project string) (string, error) {
+	invalid := fmt.Errorf("请在工作空间内选择项目目录 (%s)", l.Workspace())
 	if !filepath.IsAbs(project) {
 		return "", invalid
 	}
@@ -65,7 +65,7 @@ func (l launcher) projectInWorkspace(project string) (string, error) {
 	if err != nil {
 		return "", invalid
 	}
-	root, err := filepath.EvalSymlinks(l.workspace())
+	root, err := filepath.EvalSymlinks(l.Workspace())
 	if err != nil {
 		return "", err
 	}
@@ -80,7 +80,7 @@ func (l launcher) projectInWorkspace(project string) (string, error) {
 	return rel, nil
 }
 
-func (vm vmInfo) hasMounts(want []vmMount) bool {
+func (vm VMInfo) hasMounts(want []VMMount) bool {
 	actual := slices.Clone(vm.Config.Mounts)
 	for i := range actual {
 		if actual[i].MountPoint == actual[i].Location {
@@ -90,7 +90,7 @@ func (vm vmInfo) hasMounts(want []vmMount) bool {
 	return slices.Equal(actual, want)
 }
 
-func (l launcher) linkGuestShares(ctx context.Context) error {
+func (l Launcher) linkGuestShares(ctx context.Context) error {
 	mounts := l.sharedMounts()
 	const link = `
 set -eu
@@ -137,7 +137,7 @@ link_share "$1" "$HOME/workspace"
 link_share "$2" "$HOME/.claude"
 `
 	args := vmShellArgs(link, guestProjectPath(mounts[0].Location), guestProjectPath(mounts[1].Location))
-	if _, err := commandOutput(l.cmd(ctx, "", l.lima, args...)); err != nil {
+	if _, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, args...)); err != nil {
 		return fmt.Errorf("VM 工作空间或 Claude 配置目录初始化失败 (%w)", err)
 	}
 	return nil

@@ -1,4 +1,4 @@
-package main
+package vm
 
 import (
 	"context"
@@ -21,24 +21,24 @@ func TestLiveVMCanReattachEmbeddedTerminalOffline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shareRoot, err := defaultShareRoot()
+	shareRoot, err := DefaultShareRoot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := launcher{root: root, home: strings.TrimSpace(string(home)), shareRoot: shareRoot, lima: filepath.Join(root, ".mvp-cache/lima/bin/limactl-mvp")}
+	l := Launcher{Root: root, Home: strings.TrimSpace(string(home)), ShareRoot: shareRoot, LimactlBin: filepath.Join(root, ".mvp-cache/lima/bin/limactl-mvp")}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	vm, err := l.inspectVM(ctx)
+	vm, err := l.InspectVM(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status := l.networkStatus(vm); status == nil || status.Online {
+	if status := l.NetworkStatus(vm); status == nil || status.Online {
 		t.Fatalf("expected a live gateway with disconnected internet, got %+v", status)
 	}
-	if err := l.prepare(ctx, l.settings()); err != nil {
+	if err := l.Prepare(ctx, l.Settings()); err != nil {
 		t.Fatal(err)
 	}
-	project, err := os.MkdirTemp(l.workspace(), "mvp project ")
+	project, err := os.MkdirTemp(l.Workspace(), "mvp project ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,35 +46,35 @@ func TestLiveVMCanReattachEmbeddedTerminalOffline(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "marker"), []byte("mvp-workspace-ok"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	otherProject, err := os.MkdirTemp(l.workspace(), "mvp other ")
+	otherProject, err := os.MkdirTemp(l.Workspace(), "mvp other ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(otherProject)
-	zone, err := commandOutput(l.cmd(ctx, "", l.lima, vmShellArgs("/usr/bin/readlink /etc/localtime")...))
+	zone, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, vmShellArgs("/usr/bin/readlink /etc/localtime")...))
 	if err != nil || !strings.HasSuffix(strings.TrimSpace(string(zone)), "/zoneinfo/America/Los_Angeles") {
 		t.Fatalf("guest timezone = %q, error = %v", zone, err)
 	}
 
-	a, err := l.create(ctx, project, "/bin/sh -c 'test \"$(cat marker)\" = mvp-workspace-ok || exit 1; echo mvp-ready; exec /bin/zsh -f'")
+	a, err := l.Create(ctx, project, "/bin/sh -c 'test \"$(cat marker)\" = mvp-workspace-ok || exit 1; echo mvp-ready; exec /bin/zsh -f'")
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherCfg := l.settings()
+	otherCfg := l.Settings()
 	otherCfg.Project = otherProject
-	if err := l.prepare(ctx, otherCfg); err != nil {
+	if err := l.Prepare(ctx, otherCfg); err != nil {
 		t.Fatal(err)
 	}
-	if otherVM, err := l.inspectVM(ctx); err != nil || otherVM.HostAgentPID != vm.HostAgentPID {
+	if otherVM, err := l.InspectVM(ctx); err != nil || otherVM.HostAgentPID != vm.HostAgentPID {
 		t.Fatalf("switching projects changed the VM host agent: %+v, %v", otherVM, err)
 	}
-	b, err := l.create(ctx, otherProject, "/bin/sh")
+	b, err := l.Create(ctx, otherProject, "/bin/sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	tmux := func(args ...string) string {
 		t.Helper()
-		out, err := commandOutput(l.cmd(ctx, "", l.lima, l.tmuxArgs(args...)...))
+		out, err := commandOutput(l.Cmd(ctx, "", l.LimactlBin, l.TmuxArgs(args...)...))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +82,7 @@ func TestLiveVMCanReattachEmbeddedTerminalOffline(t *testing.T) {
 	}
 	defer func() {
 		for _, id := range []string{a, b} {
-			_ = l.cmd(ctx, "", l.lima, l.tmuxArgs("kill-session", "-t", "="+id)...).Run()
+			_ = l.Cmd(ctx, "", l.LimactlBin, l.TmuxArgs("kill-session", "-t", "="+id)...).Run()
 		}
 	}()
 	// Pane names are session IDs, so this PID distinguishes reattaching
@@ -118,7 +118,7 @@ func TestLiveVMCanReattachEmbeddedTerminalOffline(t *testing.T) {
 		t.Fatalf("the two terminal commands did not both run in the original guest session")
 	}
 	tmux("has-session", "-t", "="+b)
-	sessions, err := l.list(ctx)
+	sessions, err := l.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,11 +130,11 @@ func TestLiveVMCanReattachEmbeddedTerminalOffline(t *testing.T) {
 		t.Fatalf("session discovery did not find %s and %s: %v", a, b, sessions)
 	}
 
-	finished, err := l.create(ctx, project, "/usr/bin/printf mvp-finished")
+	finished, err := l.Create(ctx, project, "/usr/bin/printf mvp-finished")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.cmd(ctx, "", l.lima, l.tmuxArgs("kill-session", "-t", "="+finished)...).Run()
+	defer l.Cmd(ctx, "", l.LimactlBin, l.TmuxArgs("kill-session", "-t", "="+finished)...).Run()
 	deadline := time.Now().Add(5 * time.Second)
 	for tmux("display-message", "-p", "-t", finished+":0", "#{pane_dead}") != "1" {
 		if time.Now().After(deadline) {
@@ -152,11 +152,11 @@ type testTerminal struct {
 	terminal *terminal.Terminal
 }
 
-func attachTestTerminal(t *testing.T, l launcher, id string) testTerminal {
+func attachTestTerminal(t *testing.T, l Launcher, id string) testTerminal {
 	t.Helper()
 	term, err := terminal.New(terminal.Options{
-		Command: append([]string{l.lima}, l.tmuxArgs("attach-session", "-t", "="+id)...),
-		Env:     []string{"LIMA_HOME=" + l.home},
+		Command: append([]string{l.LimactlBin}, l.TmuxArgs("attach-session", "-t", "="+id)...),
+		Env:     []string{"LIMA_HOME=" + l.Home},
 	})
 	if err != nil {
 		t.Fatal(err)

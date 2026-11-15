@@ -10,12 +10,13 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	egress "github.com/finch-xu/clawdhome/lima-egress"
+	"github.com/finch-xu/clawdhome/vm"
 )
 
 func (a *app) statusBar(c *ui.Context) {
-	status := describeStatus(a.state, a.ssh, a.cfg, a.network, time.Now())
+	status := vm.DescribeStatus(a.state, a.ssh, a.cfg, a.network, time.Now())
 	ui.Row(c.Key("summary")).Gap(8).Children(func() {
-		ui.Text(c, status.summary()).Grow(1).SingleLine().Ellipsis("…")
+		ui.Text(c, status.Summary()).Grow(1).SingleLine().Ellipsis("…")
 		label := "状态详情"
 		if a.detailsOpen {
 			label = "收起详情"
@@ -33,8 +34,8 @@ func (a *app) statusBar(c *ui.Context) {
 	if a.detailsOpen {
 		ui.Column(c.Key("details")).Gap(3).Children(func() {
 			for _, line := range []struct{ label, text string }{
-				{"VM", status.vmDetail}, {"Clash", status.proxyDetail},
-				{"Google", status.probeDetail}, {"防火墙", status.firewallDetail},
+				{"VM", status.VMDetail}, {"Clash", status.ProxyDetail},
+				{"Google", status.ProbeDetail}, {"防火墙", status.FirewallDetail},
 			} {
 				if line.text != "" {
 					ui.Text(c.Key(line.label), line.label+"  "+line.text).SingleLine().Ellipsis("…")
@@ -67,7 +68,7 @@ func (a *app) settingsView(c *ui.Context) {
 			}
 			ui.Text(c, a.portTestMessage).Grow(1).SingleLine().Ellipsis("…")
 		})
-		ui.Text(c, "VM 环境  美国英语 · 美国地区 · "+guestTimeZone)
+		ui.Text(c, "VM 环境  美国英语 · 美国地区 · "+vm.GuestTimeZone)
 		ui.Text(c, fmt.Sprintf("探测策略  通常每 %d 秒 · %d 秒超时 · 连续 %d 次成功后恢复 · 429 时退避",
 			int(egress.ProbeInterval.Seconds()), int(egress.ProbeTimeout.Seconds()), egress.RecoveryProbes))
 		ui.Row(c.Key("actions")).Gap(8).Children(func() {
@@ -86,7 +87,7 @@ func (a *app) settingsView(c *ui.Context) {
 func (a *app) saveSettings() {
 	cfg := a.draft
 	cfg.Port = strings.TrimSpace(cfg.Port)
-	if err := a.launcher.saveSettings(cfg); err != nil {
+	if err := a.launcher.SaveSettings(cfg); err != nil {
 		a.settingsMessage = err.Error()
 		return
 	}
@@ -96,7 +97,7 @@ func (a *app) saveSettings() {
 
 func (a *app) testPort() {
 	port := strings.TrimSpace(a.draft.Port)
-	if !validPort(port) {
+	if !vm.ValidPort(port) {
 		a.portTestMessage = "请输入 1–65535 之间的端口"
 		return
 	}
