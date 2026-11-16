@@ -299,16 +299,18 @@ func (a *app) poll() {
 				return
 			}
 			if vmErr != nil {
+				if a.state == "running" {
+					a.clearNetworkSnapshot()
+				}
 				a.state, a.ssh, a.network = "unknown", vm.SSHUnknown, nil
 				return
 			}
-			if a.state == "running" && info.Status != "running" {
+			if a.state != info.Status && info.Status != "running" {
 				a.clearNetworkSnapshot()
 			}
 			a.state, a.ssh, a.network = info.Status, ssh, network
 			if sessionsErr == nil {
-				a.sessions = sessions
-				a.reportAttachFailure()
+				a.reconcileSessions(sessions)
 			}
 		})
 	}()
@@ -356,7 +358,7 @@ func (a *app) run(command string) {
 			if err == nil {
 				a.state, a.ssh = "running", vm.SSHAvailable
 				if listErr == nil {
-					a.sessions = sessions
+					a.reconcileSessions(sessions)
 				}
 				a.attach(id)
 			}
@@ -402,15 +404,25 @@ func (a *app) terminalExited(id string, term *terminal.Terminal, code int) {
 	a.poll()
 }
 
-func (a *app) reportAttachFailure() {
-	if a.attachFailure == "" {
-		return
-	}
-	for _, s := range a.sessions {
+// A successful poll owns the session list. Retain a disconnected selection
+// while its session still exists, and release attachments that tmux removed.
+func (a *app) reconcileSessions(sessions []vm.Session) {
+	a.sessions = sessions
+	present := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		present[s.ID] = true
 		if s.ID == a.attachFailure && !s.Exited {
 			a.message = notice{key: "session.reattach"}
-			break
 		}
+	}
+	for id, term := range a.terms {
+		if !present[id] {
+			delete(a.terms, id)
+			go term.Close()
+		}
+	}
+	if !present[a.selected] {
+		a.selected = ""
 	}
 	a.attachFailure = ""
 }
@@ -428,8 +440,9 @@ func (a *app) stop() {
 			a.finish(err)
 			a.state = "running"
 			if err == nil {
-				a.state, a.selected, a.sessions = "stopped", "", nil
 				a.attachFailure = ""
+				a.state = "stopped"
+				a.reconcileSessions(nil)
 				a.network, a.ssh = nil, vm.SSHNotRunning
 				a.clearNetworkSnapshot()
 			}
@@ -440,6 +453,9 @@ func (a *app) stop() {
 
 func (a *app) kill() {
 	id := a.selected
+	if id == "" || a.busy {
+		return
+	}
 	a.vmRevision++
 	a.busy = true
 	launcher := a.launcher

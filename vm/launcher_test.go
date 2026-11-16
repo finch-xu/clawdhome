@@ -229,7 +229,7 @@ func TestParseTmuxSessionExitMetadata(t *testing.T) {
 	lines := "cli-live::@v2::1700000000::0::::::zsh::\n" +
 		"cli-zero::@v2::1700000000::1::0::::sh::printf 'a::b'\n" +
 		"cli-one::@v2::1700000000::1::1::::sh::exit 1\n" +
-		"cli-sig::@v2::1700000000::1::::TERM::sh::sleep 20\n" +
+		"cli-sig::@v2::1700000000::1::::term::sh::sleep 20\n" +
 		"cli-unknown::@v2::bad::1::invalid::::sh::work"
 	got := ParseSessions(lines)
 	if len(got) != 5 {

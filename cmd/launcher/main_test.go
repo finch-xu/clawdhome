@@ -261,3 +261,22 @@ func TestOldTerminalExitDoesNotClearNewAttachment(t *testing.T) {
 		t.Fatal("an old terminal's exit changed the new attachment")
 	}
 }
+
+func TestKillingSelectedSessionClearsSelection(t *testing.T) {
+	q := make(queuedUpdater, 4)
+	a := &app{window: q, selected: "cli-ended", state: vm.VMRunning,
+		sessions: []vm.Session{{ID: "cli-ended"}, {ID: "cli-kept"}},
+		launcher: fakeLauncher(t, `
+case "$1" in
+	list) printf '{"name":"cli-mvp","status":"Running"}\n';;
+	shell)
+		case "$*" in *list-sessions*) echo 'cli-kept::zsh';; esac;;
+esac
+`)}
+	a.kill()
+	q.next(t)()
+	q.next(t)()
+	if a.selected != "" || len(a.sessions) != 1 || a.sessions[0].ID != "cli-kept" {
+		t.Fatalf("selection=%q, sessions=%+v", a.selected, a.sessions)
+	}
+}

@@ -57,8 +57,14 @@ func (a *app) sessionsView(c *ui.Context) {
 
 func (a *app) sessionRow(c *ui.Context, s vm.Session, now time.Time) {
 	name := a.sessionName(s)
-	button := ui.Button(c, "").FillWidth().Padding(6, 8).Label(name).Disabled(a.busy).
-		Selected(a.selected == s.ID).Tooltip(name).Children(func() {
+	meta := a.sessionMeta(s, now)
+	selected := a.selected == s.ID
+	detailColor := c.Theme().TextMuted
+	if selected {
+		detailColor = c.Theme().AccentText
+	}
+	button := ui.Button(c, "").FillWidth().Padding(6, 8).Label(name + ", " + meta).Disabled(a.busy).
+		Selected(selected).Tooltip(name).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Row(c).Gap(6).Children(func() {
 				color := c.Theme().Success
@@ -71,7 +77,7 @@ func (a *app) sessionRow(c *ui.Context, s vm.Session, now time.Time) {
 				statusDot(c, color)
 				ui.Text(c, name).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
 			})
-			ui.Text(c, a.sessionMeta(s, now)).FontSize(11).TextColor(c.Theme().TextMuted)
+			ui.Text(c, meta).FontSize(11).TextColor(detailColor)
 		})
 	})
 	if button.Clicked() {

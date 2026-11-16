@@ -87,7 +87,7 @@ func ParseSessions(lines string) []Session {
 			created, deadStatus = fields[0], fields[2]
 			s.Exited, s.Command = fields[1] == "1", fields[4]
 			if s.Exited {
-				s.ExitSignal = fields[3]
+				s.ExitSignal = strings.ToUpper(strings.TrimSpace(fields[3]))
 				s.Command = fields[5]
 			}
 		} else {
