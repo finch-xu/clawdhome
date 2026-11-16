@@ -27,34 +27,43 @@ func (a *app) routeLabel(route egress.Route) string {
 }
 
 func (a *app) networkPanel(c *ui.Context) {
-	ui.Column(c).Grow(1).MinHeight(0).Gap(6).Children(func() {
-		ui.Row(c.Key("routes")).Gap(6).Children(func() {
-			oldGateway := a.state == "running" && (a.network == nil || a.network.Route == "")
-			for _, route := range []egress.Route{egress.RouteClash, egress.RouteSystem, egress.RouteBlocked} {
-				if ui.Button(c.Key(string(route)), a.routeLabel(route)).Disabled(a.busy || oldGateway || route == a.preferredRoute).Clicked() {
-					a.setRoute(route)
+	ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
+		ui.Column(c).Padding(16).Gap(12).Children(func() {
+			ui.Text(c, tr("network.routeTitle", a.locale)).Bold()
+			ui.Row(c.Key("routes")).Gap(6).Wrap().Children(func() {
+				oldGateway := a.state == vm.VMRunning && (a.network == nil || a.network.Route == "")
+				for _, option := range []struct {
+					route egress.Route
+					desc  string
+				}{{egress.RouteClash, "network.routeClash"}, {egress.RouteSystem, "network.routeSystem"}, {egress.RouteBlocked, "network.routeBlocked"}} {
+					selected := option.route == a.preferredRoute
+					if ui.Button(c.Key(string(option.route)), a.routeLabel(option.route)).
+						Tooltip(tr(option.desc, a.locale)).Selected(selected).
+						Disabled(a.busy || oldGateway || selected).Clicked() {
+						a.setRoute(option.route)
+					}
 				}
+			})
+			ui.Text(c, tr("network.statusTitle", a.locale)).Bold()
+			a.connectionTable(c.Key("connection"))
+			ui.Row(c.Key("diagnostics-actions")).Gap(6).Wrap().Children(func() {
+				if ui.Button(c, tr("network.refresh", a.locale)).Disabled(a.networkBusy || a.state != vm.VMRunning).Clicked() {
+					a.refreshNetwork(false)
+				}
+				if ui.Button(c, tr("network.testAnthropic", a.locale)).Disabled(a.networkBusy || a.state != vm.VMRunning).Clicked() {
+					a.refreshNetwork(true)
+				}
+			})
+			if a.networkMessage.key != "" {
+				a.noticeView(c.Key("network-message"), a.networkMessage)
 			}
-			if ui.Button(c, tr("network.refresh", a.locale)).Disabled(a.networkBusy || a.state != "running").Clicked() {
-				a.refreshNetwork(false)
-			}
-			if ui.Button(c, tr("network.testAnthropic", a.locale)).Disabled(a.networkBusy || a.state != "running").Clicked() {
-				a.refreshNetwork(true)
-			}
-			if ui.Button(c, tr("network.backToTerm", a.locale)).Clicked() {
-				a.networkOpen = false
+			if a.state == vm.VMRunning && a.networkText != "" {
+				ui.Text(c, tr("network.snapshotTitle", a.locale)).Bold()
+				ui.ScrollBoth(c.Key("network-scroll")).Height(210).Border(1, c.Theme().Border).Radius(6).Children(func() {
+					ui.Text(c, a.networkText).Padding(8).Font("Menlo").FontSize(11).NoWrap().Selectable()
+				})
 			}
 		})
-		a.connectionTable(c.Key("connection"))
-		if a.networkMessage.key != "" {
-			a.noticeView(c.Key("network-message"), a.networkMessage)
-		}
-		if a.state == "running" && a.networkText != "" {
-			ui.Text(c, tr("network.snapshotTitle", a.locale))
-			ui.ScrollBoth(c.Key("network-scroll")).Grow(1).MinHeight(0).Children(func() {
-				ui.Text(c, a.networkText).NoWrap()
-			})
-		}
 	})
 }
 
@@ -98,13 +107,17 @@ func (a *app) connectionRows(now time.Time) []connectionRow {
 func (a *app) connectionTable(c *ui.Context) {
 	ui.Column(c).Gap(3).Children(func() {
 		for _, row := range a.connectionRows(time.Now()) {
-			ui.Row(c.Key(row.key)).Gap(10).Children(func() {
-				ui.Text(c, row.label).Width(112).Shrink(0).TextColor(c.Theme().TextMuted)
-				value := ui.Text(c, row.value).Grow(1).MinWidth(0).Wrap()
-				if row.detail != "" {
-					value.Tooltip(row.detail)
-				}
-			})
+			diagnosticRow(c.Key(row.key), row)
+		}
+	})
+}
+
+func diagnosticRow(c *ui.Context, row connectionRow) {
+	ui.Row(c).Gap(10).AlignItems(ui.Start).Children(func() {
+		ui.Text(c, row.label).Width(112).Shrink(0).TextColor(c.Theme().TextMuted)
+		value := ui.Text(c, row.value).Grow(1).MinWidth(0)
+		if row.detail != "" {
+			value.Tooltip(row.detail)
 		}
 	})
 }

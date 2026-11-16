@@ -24,7 +24,7 @@ VM 启动时默认隐藏系统桌面。需要操作系统界面时，点「显�
 
 「设置」里可以选择项目目录、保存本机 Clash 端口和测试 SOCKS5 握手。测试端口时不发送目标地址。运行中保存的端口在下次启动 VM 时生效。「状态详情」分别显示 VM、SSH、Clash、Google 探测和实际出口策略。
 
-点「Claude Code」或按 `⌘⇧C`，在 VM 的项目目录启动 `claude`。点「终端」或按 `⌘⇧T`，在同一目录打开新的 zsh 会话。Claude Code 需要安装在 VM 内。
+在会话页点「新建会话」，可输入命令或用快捷入口。点「Claude Code」或按 `⌘⇧C`，在 VM 的项目目录启动 `claude`。点「终端」或按 `⌘⇧T`，在同一目录打开新的 zsh 会话。Claude Code 需要安装在 VM 内。
 
 ## 共享目录
 
@@ -45,9 +45,9 @@ Claude Code 二进制安装在 VM 本地的 `~/.local/share/claude/`，入口是
 
 离线验证可以选择「断开公网」。自动化测试用本地 SOCKS5 和 TLS 服务模拟 Google，验证 DoH、TCP 半关闭和已有连接撤销。Clash 模式的端口需指向宿主机 IPv4 回环上的 SOCKS5 或 Mixed 专用入站，规则应绑定无 `DIRECT` 回退的代理策略。网关从关闭状态启动，开放后按选定模式转发 IPv4 TCP 和 DoH。公网 UDP、IPv6、宿主机通用回环服务和局域网被拒绝。
 
-「网络连接」默认使用 **系统路由**，沿用宿主机的网络出口。可以手动切换为 **Clash** 或 **断开公网**，手动选择会保留。切换时撤销旧公网连接，重新通过探测后才打开新出口。宿主机到 VM 的本地 SSH 保持可用。
+「网络」页默认使用 **系统路由**，沿用宿主机的网络出口。可以手动切换为 **Clash** 或 **断开公网**，手动选择会保留。切换时撤销旧公网连接，重新通过探测后才打开新出口。宿主机到 VM 的本地 SSH 保持可用。
 
-「刷新连接」显示 VM 的 TCP/UDP 套接字、网卡、路由和 DNS 配置快照。「测试 Anthropic」额外在 VM 内检查 `api.anthropic.com` 的 DNS 和 HTTPS。启用 Clash 后，握手成功只代表本地代理端口可用，仍需等 Google 探测开放防火墙。DoH 默认走 Google，发生传输或 HTTP 失败时通过同一出口尝试 Cloudflare。
+「连接状态」显示当前出口、握手、探测、防火墙和 DoH。「刷新连接」读取 VM 的 TCP/UDP 套接字、网卡、路由和 DNS 配置快照。「测试 Anthropic」额外在 VM 内检查 `api.anthropic.com` 的 DNS 和 HTTPS。启用 Clash 后，握手成功只代表本地代理端口可用，仍需等 Google 探测开放防火墙。DoH 默认走 Google，发生传输或 HTTP 失败时通过同一出口尝试 Cloudflare。
 
 ## 重建
 

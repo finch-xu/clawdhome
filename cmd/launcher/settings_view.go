@@ -14,78 +14,93 @@ import (
 	"github.com/finch-xu/clawdhome/vm"
 )
 
-// statusBar 渲染窗口底部的状态条。详情面板在状态条上方展开，这样常驻的那一行
-// 始终贴着窗口下边缘。
 func (a *app) statusBar(c *ui.Context) {
 	status := vm.DescribeStatus(a.state, a.ssh, a.cfg, a.network, time.Now())
-	if a.detailsOpen {
-		ui.Column(c.Key("details")).Gap(2).Children(func() {
-			for _, line := range []struct{ label, text, detail string }{
-				{"VM", tr("status.localSSH", a.locale) + tr("ssh."+status.SSH, a.locale), ""},
-				{"Clash", a.proxyDetail(status), status.ProxyError},
-				{"Google", a.probeDetail(status), status.ProbeReason},
-				{tr("status.firewall", a.locale), a.firewallDetail(status), ""},
-			} {
-				if line.text != "" {
-					item := ui.Text(c.Key(line.label), line.label+"  "+line.text).SingleLine().Ellipsis("…")
-					if line.detail != "" {
-						item.Tooltip(line.detail)
+	ui.Divider(c)
+	ui.Column(c.Key("status-bar")).Background(sidebarColor(c.Theme())).Children(func() {
+		if a.detailsOpen {
+			ui.Column(c.Key("details")).Padding(7, 12).Gap(3).Children(func() {
+				for _, row := range []connectionRow{
+					{"ssh", "VM", tr("status.localSSH", a.locale) + tr("ssh."+status.SSH, a.locale), ""},
+					{"proxy", "Clash", a.proxyDetail(status), status.ProxyError},
+					{"probe", "Google", a.probeDetail(status), status.ProbeReason},
+					{"firewall", tr("status.firewall", a.locale), a.firewallDetail(status), ""},
+				} {
+					if row.value != "" {
+						diagnosticRow(c.Key(row.key), row)
 					}
 				}
+			})
+			ui.Divider(c)
+		}
+		ui.Row(c.Key("summary")).Padding(6, 10).Gap(8).Children(func() {
+			ui.Row(c.Key("items")).Grow(1).MinWidth(0).Wrap().Gap(8).Children(func() {
+				for _, item := range a.statusItems(status) {
+					ui.Row(c.Key(item.key)).Gap(4).Children(func() {
+						statusDot(c, statusColor(c.Theme(), item.tone))
+						ui.Text(c, item.label).FontSize(11).SingleLine()
+					})
+				}
+			})
+			label := tr("status.details", a.locale)
+			if a.detailsOpen {
+				label = tr("status.hideDetails", a.locale)
+			}
+			if ui.Button(c.Key("show-details"), label).Clicked() {
+				a.detailsOpen = !a.detailsOpen
 			}
 		})
-	}
-	ui.Row(c.Key("summary")).Gap(6).Children(func() {
-		ui.Text(c, a.statusSummary(status)).Grow(1).SingleLine().Ellipsis("…")
-		label := tr("status.details", a.locale)
-		if a.detailsOpen {
-			label = tr("status.hideDetails", a.locale)
-		}
-		if ui.Button(c, label).Clicked() {
-			a.detailsOpen = !a.detailsOpen
-		}
-		if ui.Button(c, tr("status.network", a.locale)).Clicked() {
-			a.networkOpen = !a.networkOpen
-			if a.networkOpen {
-				a.refreshNetwork(false)
-			}
-		}
 	})
 }
 
 func (a *app) settingsView(c *ui.Context) {
-	ui.Column(c).Padding(10).Gap(6).Children(func() {
-		ui.Row(c.Key("folder")).Gap(6).Children(func() {
-			project := a.draft.Project
-			if project == "" {
-				project = tr("settings.notSelected", a.locale)
-			}
-			ui.Text(c, tr("settings.projectDir", a.locale)+project).Grow(1).SingleLine().Ellipsis("…")
-			if ui.Button(c, tr("settings.chooseDir", a.locale)).Disabled(a.busy).Clicked() {
-				a.chooseDirectory()
-			}
+	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
+		ui.Scroll(c.Key("settings-scroll")).Grow(1).MinHeight(0).Children(func() {
+			ui.Column(c).Padding(16).Gap(14).Children(func() {
+				a.settingsSection(c.Key("project"), "settings.projectTitle", func() {
+					ui.Row(c).Gap(8).Children(func() {
+						project := a.draft.Project
+						if project == "" {
+							project = tr("settings.notSelected", a.locale)
+						}
+						ui.Text(c, project).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").Tooltip(project)
+						if ui.Button(c, tr("settings.chooseDir", a.locale)).Disabled(a.busy).Clicked() {
+							a.chooseDirectory()
+						}
+					})
+					ui.Text(c, tr("settings.projectHint", a.locale)).TextColor(c.Theme().TextMuted)
+				})
+				a.settingsSection(c.Key("proxy"), "settings.proxyTitle", func() {
+					ui.Row(c).Gap(8).Wrap().Children(func() {
+						ui.Text(c, "127.0.0.1:")
+						ui.TextInput(c.Key("clash-port"), &a.draft.Port).Width(80).
+							Label(tr("settings.clashPort", a.locale)).
+							Placeholder(tr("settings.portHint", a.locale)).Disabled(a.busy || a.portTesting)
+						if ui.Button(c, tr("settings.testPort", a.locale)).Disabled(a.busy || a.portTesting).Clicked() {
+							a.testPort()
+						}
+					})
+					if a.portTestMessage.key != "" {
+						a.noticeView(c.Key("port-message"), a.portTestMessage)
+					}
+					ui.Text(c, tr("settings.portRestart", a.locale)).TextColor(c.Theme().TextMuted)
+				})
+				a.settingsSection(c.Key("appearance"), "settings.appearanceTitle", func() {
+					a.appearanceRow(c.Key("theme"))
+					a.languageRow(c.Key("language"))
+					ui.Text(c, tr("settings.langHint", a.locale)).TextColor(c.Theme().TextMuted)
+				})
+				a.settingsSection(c.Key("guest"), "settings.vmEnvTitle", func() {
+					diagnosticRow(c.Key("guest-locale"), connectionRow{label: tr("settings.guestLocale", a.locale), value: "en-US · en_US"})
+					diagnosticRow(c.Key("guest-zone"), connectionRow{label: tr("settings.guestZone", a.locale), value: vm.GuestTimeZone})
+					ui.Text(c, fmt.Sprintf(tr("settings.probePolicy", a.locale),
+						int(egress.ProbeInterval.Seconds()), int(egress.ProbeTimeout.Seconds()), egress.RecoveryProbes))
+				})
+			})
 		})
-		if a.state == "running" {
-			ui.Text(c, tr("settings.projectHint", a.locale))
-		}
-		ui.Row(c.Key("endpoint")).Gap(6).Children(func() {
-			ui.Text(c, "Clash SOCKS5 / Mixed  ·  127.0.0.1")
-			ui.TextInput(c, &a.draft.Port).Width(105).
-				Label(tr("settings.clashPort", a.locale)).
-				Placeholder(tr("settings.portHint", a.locale)).Disabled(a.busy || a.portTesting)
-			if ui.Button(c, tr("settings.testPort", a.locale)).Disabled(a.busy || a.portTesting).Clicked() {
-				a.testPort()
-			}
-			a.noticeView(c.Key("port-message"), a.portTestMessage).Grow(1)
-		})
-		a.appearanceRow(c.Key("appearance"))
-		a.languageRow(c.Key("language"))
-		ui.Text(c, tr("settings.langHint", a.locale))
-		ui.Text(c, tr("settings.vmEnv", a.locale)+vm.GuestTimeZone)
-		ui.Text(c, fmt.Sprintf(tr("settings.probePolicy", a.locale),
-			int(egress.ProbeInterval.Seconds()), int(egress.ProbeTimeout.Seconds()), egress.RecoveryProbes))
-		ui.Row(c.Key("actions")).Gap(6).Children(func() {
-			a.noticeView(c.Key("settings-message"), a.settingsMessage).Grow(1)
+		ui.Divider(c)
+		ui.Row(c.Key("settings-actions")).Padding(8, 12).Gap(6).Children(func() {
+			a.noticeView(c.Key("settings-message"), a.settingsMessage).Grow(1).MinWidth(0)
 			if ui.Button(c, tr("settings.cancel", a.locale)).Clicked() {
 				a.cancelSettings()
 			}
@@ -94,12 +109,17 @@ func (a *app) settingsView(c *ui.Context) {
 			}
 		})
 	})
-	ui.Divider(c.Key("divider"))
 }
 
-// appearanceRow 是外观三态选择：跟随系统 / 浅色 / 深色。
+func (a *app) settingsSection(c *ui.Context, title string, content func()) {
+	ui.Column(c).Gap(6).Children(func() {
+		ui.Text(c, tr(title, a.locale)).Bold()
+		ui.Column(c).Gap(6).Padding(10).Radius(7).Border(1, c.Theme().Border).Children(content)
+	})
+}
+
 func (a *app) appearanceRow(c *ui.Context) {
-	ui.Row(c).Gap(6).Children(func() {
+	ui.Row(c).Gap(6).Wrap().Children(func() {
 		ui.Text(c, tr("settings.appearance", a.locale))
 		for _, choice := range []struct {
 			pref, key string
@@ -110,7 +130,7 @@ func (a *app) appearanceRow(c *ui.Context) {
 		} {
 			selected := a.draft.ThemePref == choice.pref
 			if ui.Button(c.Key("theme-"+choice.pref), tr(choice.key, a.locale)).
-				Disabled(selected).Clicked() {
+				Selected(selected).Disabled(a.busy || selected).Clicked() {
 				a.draft.ThemePref = choice.pref
 				a.appearance.SetTheme(choice.pref)
 			}
@@ -120,7 +140,7 @@ func (a *app) appearanceRow(c *ui.Context) {
 
 // languageRow 是语言三态选择：跟随系统 / English / 简体中文。
 func (a *app) languageRow(c *ui.Context) {
-	ui.Row(c).Gap(6).Children(func() {
+	ui.Row(c).Gap(6).Wrap().Children(func() {
 		ui.Text(c, tr("settings.language", a.locale))
 		for _, choice := range []struct {
 			pref, label string
@@ -131,7 +151,7 @@ func (a *app) languageRow(c *ui.Context) {
 		} {
 			selected := a.draft.LocalePref == choice.pref
 			if ui.Button(c.Key("locale-"+choice.pref), choice.label).
-				Disabled(selected).Clicked() {
+				Selected(selected).Disabled(a.busy || selected).Clicked() {
 				a.draft.LocalePref = choice.pref
 				a.applyLocalePref(choice.pref)
 			}
@@ -189,8 +209,9 @@ func (a *app) applyLocalePref(pref string) {
 
 // cancelSettings 关掉设置面板，并把点一下就生效的外观和语言退回已保存的值，
 // 否则取消之后界面会和 launcher.json 不一致。
-func (a *app) cancelSettings() {
-	a.settingsOpen = false
+func (a *app) cancelSettings() { a.openPage(pageSessions) }
+
+func (a *app) discardSettingsDraft() {
 	a.settingsRevision++
 	a.portTesting = false
 	a.settingsMessage, a.portTestMessage = notice{}, notice{}

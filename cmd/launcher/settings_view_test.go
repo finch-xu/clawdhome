@@ -56,7 +56,7 @@ func TestCancelRevertsAppliedAppearanceAndLanguage(t *testing.T) {
 	// 外观和语言是点一下就生效的，所以取消必须把它们退回已保存的值，
 	// 否则界面会和 launcher.json 不一致，下次启动又变回去。
 	look := &stubAppearance{}
-	a := &app{window: syncUpdater{}, appearance: look, settingsOpen: true,
+	a := &app{window: syncUpdater{}, appearance: look, page: pageSettings,
 		cfg:    vm.Settings{ThemePref: "", LocalePref: ""},
 		draft:  vm.Settings{ThemePref: "dark", LocalePref: string(localeZhHans)},
 		locale: localeZhHans}
@@ -70,7 +70,7 @@ func TestCancelRevertsAppliedAppearanceAndLanguage(t *testing.T) {
 		t.Fatalf("appearance.SetLocale(%q), want it cleared back to follow-system", look.locale)
 	}
 
-	if a.settingsOpen {
+	if a.page == pageSettings {
 		t.Fatal("cancel should close the settings panel")
 	}
 	if a.draft != a.cfg {

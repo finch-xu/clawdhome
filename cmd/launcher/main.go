@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	_ "github.com/egoist/mygo/locales/zh-Hans"
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 
@@ -94,14 +95,14 @@ type app struct {
 	vmRevision       uint64
 	snapshotRevision uint64
 	lastPoll         time.Time
-	settingsOpen     bool
+	page             launcherPage
 	settingsRevision uint64
 	detailsOpen      bool
 	draft            vm.Settings
 	settingsMessage  notice
 	portTestMessage  notice
 	portTesting      bool
-	networkOpen      bool
+	newSessionOpen   bool
 	networkBusy      bool
 	networkText      string
 	networkMessage   notice
@@ -149,7 +150,7 @@ func main() {
 		a.locale = toLocale(mygo.App.Locale())
 		a.refreshNativeLanguage()
 		a.realWindow = mygo.NewWindow(mygo.WindowOptions{
-			Title: tr("app.title", a.locale), Width: 920, Height: 620, Content: ui.View(a.view),
+			Title: tr("app.title", a.locale), Width: 920, Height: 620, MinWidth: 640, MinHeight: 420, Content: ui.View(a.view),
 		})
 		a.window = a.realWindow
 		// 这两个回调要在窗口建好、a.window 赋值之后才注册：它们的唯一作用是
@@ -235,82 +236,6 @@ func findWorkspace(startDir string) string {
 	}
 }
 
-func (a *app) view(c *ui.Context) {
-	c.After(viewRefreshInterval)
-	if time.Since(a.lastPoll) >= pollInterval {
-		a.poll()
-	}
-	ui.Column(c).Fill().Padding(10).Gap(6).Children(func() {
-		ui.Row(c.Key("project")).Gap(6).Children(func() {
-			project := a.cfg.Project
-			if project == "" {
-				project = tr("topbar.noProject", a.locale)
-			}
-			ui.Text(c, project).Grow(1).SingleLine().Ellipsis("…")
-			if ui.Button(c, tr("settings.title", a.locale)).Disabled(a.busy).Clicked() {
-				if a.settingsOpen {
-					a.cancelSettings()
-				} else {
-					a.settingsOpen = true
-					a.draft, a.settingsMessage, a.portTestMessage = a.cfg, notice{}, notice{}
-				}
-			}
-		})
-		if a.settingsOpen {
-			a.settingsView(c.Key("settings"))
-		}
-		ui.Row(c.Key("controls")).Gap(6).Children(func() {
-			ui.TextInput(c, &a.command).Grow(1).
-				Placeholder(tr("session.commandHint", a.locale)).
-				Label(tr("session.commandLabel", a.locale)).Disabled(a.busy)
-			if ui.PrimaryButton(c, tr("session.run", a.locale)).Disabled(a.busy).Clicked() {
-				a.run(a.command)
-			}
-			if ui.Button(c, tr("session.claudeCode", a.locale)).Disabled(a.busy).Clicked() {
-				a.run(claudeCommand)
-			}
-			if ui.Button(c, tr("session.terminal", a.locale)).Disabled(a.busy).Clicked() {
-				a.run(terminalCommand)
-			}
-			if ui.Button(c, tr("topbar.showDesktop", a.locale)).Disabled(a.busy || a.state != "running").Clicked() {
-				a.showDesktop()
-			}
-			if ui.Button(c, tr("topbar.stopVM", a.locale)).Disabled(a.busy || a.state != "running").Clicked() {
-				a.stop()
-			}
-		})
-		if a.message.key != "" {
-			a.noticeView(c.Key("operation-message"), a.message)
-		}
-		ui.Row(c.Key("sessions")).Gap(5).Children(func() {
-			for _, s := range a.sessions {
-				if ui.Button(c.Key(s.ID), a.sessionName(s)+" · "+a.sessionMeta(s, time.Now())).Disabled(a.busy).Clicked() {
-					a.attach(s.ID)
-				}
-			}
-			if a.selected != "" && ui.Button(c, tr("session.end", a.locale)).Disabled(a.busy).Clicked() {
-				a.kill()
-			}
-		})
-		// 这三条分支的主区域都带 Grow(1)，由它吸收剩余高度，才能把下面的状态条
-		// 压到窗口底部。新增视图分支时必须同样带 Grow(1)，否则状态条会浮到内容
-		// 下方而不是贴着窗口下边缘。
-		if a.networkOpen {
-			a.networkPanel(c.Key("network-panel"))
-		} else if term := a.terms[a.selected]; term != nil {
-			ui.Box(c.Key("terminal-shell")).Grow(1).MinHeight(0).Children(func() {
-				terminal.View(c.Key(a.selected), term).Fill().AutoFocus()
-			})
-		} else {
-			ui.Box(c.Key("empty")).Grow(1).Center().Children(func() {
-				ui.Text(c, tr("session.empty", a.locale))
-			})
-		}
-		// 状态条常驻在窗口底部，详情在它上方展开。
-		a.statusBar(c.Key("status"))
-	})
-}
-
 func (a *app) showDesktop() {
 	launcher := a.launcher
 	go func() {
@@ -328,7 +253,7 @@ func (a *app) chooseDirectory() {
 		dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.realWindow, Directory: true,
 			DefaultPath: workspace, Message: message})
 		a.window.Update(func() {
-			if !a.settingsOpen || revision != a.settingsRevision {
+			if a.page != pageSettings || revision != a.settingsRevision {
 				return
 			}
 			if err != nil {
@@ -458,7 +383,8 @@ func (a *app) attach(id string) {
 		a.terms[id] = term
 	}
 	a.selected, a.attachFailure = id, ""
-	a.networkOpen = false
+	a.newSessionOpen = false
+	a.openPage(pageSessions)
 }
 
 func (a *app) terminalExited(id string, term *terminal.Terminal, code int) {

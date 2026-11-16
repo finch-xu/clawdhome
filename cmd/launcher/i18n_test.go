@@ -120,10 +120,10 @@ func TestDynamicallyLookedUpKeysExist(t *testing.T) {
 
 func TestStatusSummaryShowsStateLabelNotProgressMessage(t *testing.T) {
 	a := &app{locale: localeEN}
-	got := a.statusSummary(vm.StatusView{
+	got := a.statusItems(vm.StatusView{
 		VM: vm.VMStopping, Proxy: vm.ProxyConnected,
 		Probe: vm.ProbeReachable, Firewall: vm.FirewallProxyOnly,
-	})
+	})[0].label
 	// 状态条显示状态标签（"Stopping"），不是「停止 VM」那条进度消息。
 	if strings.Contains(got, "Stopping VM") {
 		t.Fatalf("statusSummary = %q; it picked up the progress message instead of the state label", got)
